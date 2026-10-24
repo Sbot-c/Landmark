@@ -1,0 +1,879 @@
+{
+  "generated_by": "notebooks/Landmark_Customer_Intelligence.ipynb",
+  "obs_date": "2026-10-01",
+  "fast_mode": false,
+  "files": [
+    {
+      "file": "metrics/apriori_sweep.csv",
+      "bytes": 511,
+      "md5": "ef8121c1a802e4c6b694d40601c77661",
+      "rows": 25
+    },
+    {
+      "file": "metrics/banner_ranking_full.csv",
+      "bytes": 1306,
+      "md5": "f0a6bf449da87389ed8ffef28e92cbd2",
+      "rows": 8
+    },
+    {
+      "file": "metrics/banner_ranking_ttm.csv",
+      "bytes": 1303,
+      "md5": "8c228cf7457f6df76e63deb761f2448e",
+      "rows": 8
+    },
+    {
+      "file": "metrics/bias_variance_decomposition.csv",
+      "bytes": 1353,
+      "md5": "e28a1a653b04b6b817c7e31366a65e24",
+      "rows": 10
+    },
+    {
+      "file": "metrics/bundle_offers.csv",
+      "bytes": 11464,
+      "md5": "08e56e853882ff22dfa995b9c8bee509",
+      "rows": 30
+    },
+    {
+      "file": "metrics/calibration_curve.csv",
+      "bytes": 2154,
+      "md5": "08ee2f8b1fd6e621ee7a5a42a7965c4c",
+      "rows": 30
+    },
+    {
+      "file": "metrics/calibration_summary.csv",
+      "bytes": 1734,
+      "md5": "6438c70e2da7edd2ca8c33a20c18d859",
+      "rows": 9
+    },
+    {
+      "file": "metrics/churn_association_tests.csv",
+      "bytes": 949,
+      "md5": "bac6d52ee7a1a0597a2a032de0b7dade",
+      "rows": 11
+    },
+    {
+      "file": "metrics/churn_drivers.csv",
+      "bytes": 4222,
+      "md5": "bbcf886f3a7298a1bdc4c6e802ca5b6e",
+      "rows": 53
+    },
+    {
+      "file": "metrics/churn_label_audit.json",
+      "bytes": 378,
+      "md5": "3161e94e69c86daade86f46d4181a877"
+    },
+    {
+      "file": "metrics/churn_operational_ci.csv",
+      "bytes": 359,
+      "md5": "ba5f4f3aa29e73e6ef2a41a8909bf81f",
+      "rows": 3
+    },
+    {
+      "file": "metrics/class_balance.csv",
+      "bytes": 576,
+      "md5": "492eb58d7cd27a77269a6e78a9895f95",
+      "rows": 3
+    },
+    {
+      "file": "metrics/cluster_agreement_ari.csv",
+      "bytes": 371,
+      "md5": "3156e56582dbb11ffbcd6c914346d9ba",
+      "rows": 4
+    },
+    {
+      "file": "metrics/cluster_choice.json",
+      "bytes": 1040,
+      "md5": "699a74b1bd1ba225494cb898486a38df"
+    },
+    {
+      "file": "metrics/cluster_grid.csv",
+      "bytes": 8708,
+      "md5": "cefb7c7f16d5f26fcd2a0dc1507ca1b1",
+      "rows": 54
+    },
+    {
+      "file": "metrics/clv_benchmark.csv",
+      "bytes": 2520,
+      "md5": "d51c1cb722055e0f8f4e5dc3bea6ec28",
+      "rows": 13
+    },
+    {
+      "file": "metrics/clv_benchmark_pairs.csv",
+      "bytes": 1204,
+      "md5": "267a88b7d80edae11515b6a0c7f13721",
+      "rows": 6
+    },
+    {
+      "file": "metrics/clv_intervals.json",
+      "bytes": 946,
+      "md5": "19979b807fdd7d2098aca0b6dadb855e"
+    },
+    {
+      "file": "metrics/clv_probabilistic.json",
+      "bytes": 798,
+      "md5": "3db949ee1eaa46db62575e1a031871fc"
+    },
+    {
+      "file": "metrics/clv_test_intervals.csv",
+      "bytes": 78836,
+      "md5": "b5e6bc182c05c78d56276cbdf304a652",
+      "rows": 714
+    },
+    {
+      "file": "metrics/clv_test_predictions.csv",
+      "bytes": 108772,
+      "md5": "35caa2946ebed1ce327d07a20c890a40",
+      "rows": 1464
+    },
+    {
+      "file": "metrics/cm_churn.json",
+      "bytes": 157,
+      "md5": "7c3c44f06af42d35bfe3380946c41f66"
+    },
+    {
+      "file": "metrics/cm_churn_default.json",
+      "bytes": 155,
+      "md5": "1d10024dfe58abacfb4dcaa9ef08fc5f"
+    },
+    {
+      "file": "metrics/cm_fashion.json",
+      "bytes": 157,
+      "md5": "8ce4637d65bcb904fbc4ec090c32f225"
+    },
+    {
+      "file": "metrics/cm_home.json",
+      "bytes": 167,
+      "md5": "acbe01d1411b0a58154824aab419fac6"
+    },
+    {
+      "file": "metrics/cust_intel_answers.json",
+      "bytes": 2159,
+      "md5": "6b8a66e6983f001951b8a0890b1465f8"
+    },
+    {
+      "file": "metrics/customer_master.csv",
+      "bytes": 2105242,
+      "md5": "7d22e38b5af154f92bd57e9902c97bb7",
+      "rows": 3000
+    },
+    {
+      "file": "metrics/data_audit.json",
+      "bytes": 3574,
+      "md5": "06379b93f04cc2261a836aa84523f0f6"
+    },
+    {
+      "file": "metrics/diagnostics.csv",
+      "bytes": 12673,
+      "md5": "69d529b5f9b4a9f3bb5ac327ed319819",
+      "rows": 68
+    },
+    {
+      "file": "metrics/discount_by_segment.csv",
+      "bytes": 323,
+      "md5": "0e948cea766fdd8c255c7bbed7419b9d",
+      "rows": 3
+    },
+    {
+      "file": "metrics/discount_dependency.csv",
+      "bytes": 998,
+      "md5": "602b4ebdd71d724649dcdf1b29b141da",
+      "rows": 6
+    },
+    {
+      "file": "metrics/env_versions.json",
+      "bytes": 423,
+      "md5": "fd853d127f719839dd707862ac28fe9f"
+    },
+    {
+      "file": "metrics/epsilon_arms.csv",
+      "bytes": 577,
+      "md5": "81be554245c8cc6c122b9ad2be2fd7f3",
+      "rows": 5
+    },
+    {
+      "file": "metrics/epsilon_sim_summary.csv",
+      "bytes": 730,
+      "md5": "107750c904e5c4053ae840efd3a851d2",
+      "rows": 6
+    },
+    {
+      "file": "metrics/family_winners_churn.csv",
+      "bytes": 3151,
+      "md5": "68925670e1458b3567f9d5b3bc680d5d",
+      "rows": 5
+    },
+    {
+      "file": "metrics/family_winners_fashion.csv",
+      "bytes": 3163,
+      "md5": "69151118f73b758bf4f0b98a8a0c50d7",
+      "rows": 5
+    },
+    {
+      "file": "metrics/family_winners_home.csv",
+      "bytes": 3087,
+      "md5": "4866ded00170a9d2d016d75c3e796eab",
+      "rows": 5
+    },
+    {
+      "file": "metrics/feature_dictionary.csv",
+      "bytes": 2858,
+      "md5": "7c5b90b8f8da90949c8f1d39faf501b5",
+      "rows": 21
+    },
+    {
+      "file": "metrics/fin_annual.csv",
+      "bytes": 405,
+      "md5": "410c9f58d0a7a84187790bbe9b43431b",
+      "rows": 5
+    },
+    {
+      "file": "metrics/fin_like_for_like.csv",
+      "bytes": 382,
+      "md5": "f96c2efb3b9bb3a10348fad5a6032875",
+      "rows": 3
+    },
+    {
+      "file": "metrics/fin_quarterly.csv",
+      "bytes": 2648,
+      "md5": "81a802482fb88868ef6a0ea4cb6be1ba",
+      "rows": 17
+    },
+    {
+      "file": "metrics/imbalance_ensemble_retest.csv",
+      "bytes": 2577,
+      "md5": "0870418fe568a593e89a2e3374549f7c",
+      "rows": 5
+    },
+    {
+      "file": "metrics/key_ring_proposal.json",
+      "bytes": 813,
+      "md5": "5dfd00644d768d92cb13a5eb6ec93fab"
+    },
+    {
+      "file": "metrics/leaderboard_churn.csv",
+      "bytes": 11528,
+      "md5": "92e03433c1f684a2aac96e7e9a33fe5c",
+      "rows": 17
+    },
+    {
+      "file": "metrics/leaderboard_fashion.csv",
+      "bytes": 11648,
+      "md5": "af92719765a8aeb4ea62a051529fa717",
+      "rows": 17
+    },
+    {
+      "file": "metrics/leaderboard_home.csv",
+      "bytes": 11268,
+      "md5": "a0cc1dd6db6c7addada4be9feae375b9",
+      "rows": 17
+    },
+    {
+      "file": "metrics/leakage_audit_churn.csv",
+      "bytes": 915,
+      "md5": "d3c533cfa9eb04761ae94e9877831ef6",
+      "rows": 8
+    },
+    {
+      "file": "metrics/leakage_audit_fashion.csv",
+      "bytes": 859,
+      "md5": "e8425bc515939fab630147fbcaab87c6",
+      "rows": 8
+    },
+    {
+      "file": "metrics/leakage_audit_home.csv",
+      "bytes": 863,
+      "md5": "34e12fcf5d5821f40565b8f4c75cc532",
+      "rows": 8
+    },
+    {
+      "file": "metrics/learning_curves.csv",
+      "bytes": 2554,
+      "md5": "7d1536ef17ba3d06376e774730bdf702",
+      "rows": 36
+    },
+    {
+      "file": "metrics/migration_candidates.csv",
+      "bytes": 70223,
+      "md5": "5afe78568d4e1e472f0e20290178f134",
+      "rows": 312
+    },
+    {
+      "file": "metrics/migration_style_crosscheck.csv",
+      "bytes": 303,
+      "md5": "3bd9d11124d5a0ab501bf376a966f349",
+      "rows": 2
+    },
+    {
+      "file": "metrics/mlp_activations.csv",
+      "bytes": 2110,
+      "md5": "1bdbabca154f96bd42a748e3dfbeade4",
+      "rows": 12
+    },
+    {
+      "file": "metrics/model_summary.json",
+      "bytes": 3090,
+      "md5": "aac76d7bf87dfabe8b243d0c753f435a"
+    },
+    {
+      "file": "metrics/nested_cv_churn.csv",
+      "bytes": 494,
+      "md5": "d57c4c830cb8b999e0848fc5ddf3a8eb",
+      "rows": 4
+    },
+    {
+      "file": "metrics/oot_rule_predictability.csv",
+      "bytes": 490,
+      "md5": "900d0a92b777db18af839d8776179881",
+      "rows": 4
+    },
+    {
+      "file": "metrics/oot_summary.json",
+      "bytes": 3585,
+      "md5": "418324e7991cfb7e7757cd5510758022"
+    },
+    {
+      "file": "metrics/oot_validation.csv",
+      "bytes": 697,
+      "md5": "98321d43def75303cedb63dafdc4a4d4",
+      "rows": 3
+    },
+    {
+      "file": "metrics/other_banners.csv",
+      "bytes": 770,
+      "md5": "5b2e44aa20d18599b8a58d4d27178237",
+      "rows": 4
+    },
+    {
+      "file": "metrics/pair_comparison.csv",
+      "bytes": 1184,
+      "md5": "0fc84592101b1337a1b718e4bfa48aea",
+      "rows": 4
+    },
+    {
+      "file": "metrics/pair_lift.csv",
+      "bytes": 1030,
+      "md5": "142ba12af370d01610832492f83f71c1",
+      "rows": 21
+    },
+    {
+      "file": "metrics/pca_explained.csv",
+      "bytes": 895,
+      "md5": "ba6d549c1c62f713debb1bb737f15ba4",
+      "rows": 15
+    },
+    {
+      "file": "metrics/pca_loadings.csv",
+      "bytes": 2980,
+      "md5": "03e1e723d6cd3ccf8b8ceaad392fa4fd",
+      "rows": 15
+    },
+    {
+      "file": "metrics/pca_vs_raw_classification.csv",
+      "bytes": 1004,
+      "md5": "0b465628472bbd11d84379512daeac87",
+      "rows": 12
+    },
+    {
+      "file": "metrics/perm_importance_churn.csv",
+      "bytes": 1646,
+      "md5": "70c4bee094a37b1908a9c6d9be166718",
+      "rows": 29
+    },
+    {
+      "file": "metrics/perm_importance_fashion.csv",
+      "bytes": 1525,
+      "md5": "8c27705b646f70b840d0d9a215d64535",
+      "rows": 25
+    },
+    {
+      "file": "metrics/perm_importance_home.csv",
+      "bytes": 1514,
+      "md5": "2215a9243371dc0d7fd9bf9bd10a7565",
+      "rows": 25
+    },
+    {
+      "file": "metrics/permitted_predictors.json",
+      "bytes": 3773,
+      "md5": "ee891b8d9475e5953c02a416e73d7ca9"
+    },
+    {
+      "file": "metrics/pr_curve_test.csv",
+      "bytes": 41670,
+      "md5": "29ea76b662a62db027a210bf3d4b2042",
+      "rows": 737
+    },
+    {
+      "file": "metrics/profit_scenarios.csv",
+      "bytes": 1450,
+      "md5": "497c1f5278aa9b93715e7b3f81bdcb9d",
+      "rows": 16
+    },
+    {
+      "file": "metrics/qa_checks.json",
+      "bytes": 2199,
+      "md5": "b5fa8554a7d0c408318ae83bec2e1480"
+    },
+    {
+      "file": "metrics/quality_findings.csv",
+      "bytes": 1649,
+      "md5": "8818c67f344e4b96e0ebe19d2e5b893e",
+      "rows": 7
+    },
+    {
+      "file": "metrics/reconciliation.json",
+      "bytes": 332,
+      "md5": "d9efaef3eff02f8e31648bbb90619c61"
+    },
+    {
+      "file": "metrics/regression_historical.csv",
+      "bytes": 5771,
+      "md5": "c9f85ca7e72831a69633daf0ebc859ee",
+      "rows": 21
+    },
+    {
+      "file": "metrics/regression_next_period.csv",
+      "bytes": 3279,
+      "md5": "a7c62f0cd1901ade16c4dd63067d4a5a",
+      "rows": 13
+    },
+    {
+      "file": "metrics/risk_band_check.csv",
+      "bytes": 233,
+      "md5": "673303fa7409f3e6f5ca5fd0848262fc",
+      "rows": 3
+    },
+    {
+      "file": "metrics/routing_features_fashion.csv",
+      "bytes": 715465,
+      "md5": "87a991a0194405dff5363f1930d1f7f2",
+      "rows": 3000
+    },
+    {
+      "file": "metrics/routing_features_home.csv",
+      "bytes": 700254,
+      "md5": "83907a3536f3ab8181af10753671aed1",
+      "rows": 3000
+    },
+    {
+      "file": "metrics/rubric_verification.csv",
+      "bytes": 1023,
+      "md5": "29547c20feccca58c24738a8bd75f189",
+      "rows": 13
+    },
+    {
+      "file": "metrics/rules_all.csv",
+      "bytes": 5274,
+      "md5": "512a03a52aa29ab19c90c39c4f350a41",
+      "rows": 19
+    },
+    {
+      "file": "metrics/rules_by_segment.csv",
+      "bytes": 2545,
+      "md5": "d1bbba5e04229820e150bdc6ef6ee0ca",
+      "rows": 18
+    },
+    {
+      "file": "metrics/rules_month_robustness.csv",
+      "bytes": 2309,
+      "md5": "012c4c429182a461f5a05c9689652f1c",
+      "rows": 19
+    },
+    {
+      "file": "metrics/rules_screened.csv",
+      "bytes": 57951,
+      "md5": "ee5dc33fd68d845870d329574043d4e1",
+      "rows": 292
+    },
+    {
+      "file": "metrics/savings_proxy_scenarios.csv",
+      "bytes": 236,
+      "md5": "7e3f7c9c3bee3bb23f704758641d727d",
+      "rows": 3
+    },
+    {
+      "file": "metrics/scoring_guard_churn.csv",
+      "bytes": 942,
+      "md5": "22419efb9665122ef16981ac2f522960",
+      "rows": 11
+    },
+    {
+      "file": "metrics/scoring_guard_churn.json",
+      "bytes": 454,
+      "md5": "1ce4f7229884bdc464bf035aa184c24b"
+    },
+    {
+      "file": "metrics/scoring_guard_clv.csv",
+      "bytes": 1279,
+      "md5": "58106d57bd8277e2c2343bd6b1b8e747",
+      "rows": 12
+    },
+    {
+      "file": "metrics/scoring_guard_clv.json",
+      "bytes": 448,
+      "md5": "55ac946bf5c91d12ec8a52dfff2ef96e"
+    },
+    {
+      "file": "metrics/segment_dashboard.csv",
+      "bytes": 3484,
+      "md5": "54cee34da431804b28be7ff95a665ff6",
+      "rows": 3
+    },
+    {
+      "file": "metrics/segment_names.json",
+      "bytes": 122,
+      "md5": "0f9ac8f11b29324de1e91ff04fe9a7dd"
+    },
+    {
+      "file": "metrics/segment_profiles.csv",
+      "bytes": 3138,
+      "md5": "6d1667e116bdd53209594eb592f5aba9",
+      "rows": 3
+    },
+    {
+      "file": "metrics/shukran_signups_by_quarter.csv",
+      "bytes": 324,
+      "md5": "d10223e059497580cd285bf69ed18bc2",
+      "rows": 28
+    },
+    {
+      "file": "metrics/shukran_signups_by_year.csv",
+      "bytes": 290,
+      "md5": "2a154c027c39ffa2f8cc53b344c442aa",
+      "rows": 8
+    },
+    {
+      "file": "metrics/shukran_summary.json",
+      "bytes": 3564,
+      "md5": "423e1b96a24d0e418d90ca005a284fd7"
+    },
+    {
+      "file": "metrics/style_choice.json",
+      "bytes": 560,
+      "md5": "01941f59b65f1ac7700c764dda207201"
+    },
+    {
+      "file": "metrics/style_cluster_grid.csv",
+      "bytes": 865,
+      "md5": "493f5de119e3d20d32e070b417ffa42c",
+      "rows": 8
+    },
+    {
+      "file": "metrics/style_profiles.csv",
+      "bytes": 1085,
+      "md5": "491b387c3f6a9040fd53cbf2315754d9",
+      "rows": 3
+    },
+    {
+      "file": "metrics/style_vs_banner_crosstab.csv",
+      "bytes": 203,
+      "md5": "6068d874ce578ab7c2ee004313de22ed",
+      "rows": 3
+    },
+    {
+      "file": "metrics/test_ci.csv",
+      "bytes": 10111,
+      "md5": "f8bdba002044a1ef081d6b8bcbf74593",
+      "rows": 96
+    },
+    {
+      "file": "metrics/test_ci_pairs.csv",
+      "bytes": 949,
+      "md5": "722ec41366caa4114f1289cea9d2aa42",
+      "rows": 5
+    },
+    {
+      "file": "metrics/threshold_choice.json",
+      "bytes": 1811,
+      "md5": "77766abb6897966ca34e0bb7bc49ec0a"
+    },
+    {
+      "file": "metrics/threshold_curve.csv",
+      "bytes": 13262,
+      "md5": "415a10ebfb8c87c60f7deafb72969f1f",
+      "rows": 91
+    },
+    {
+      "file": "metrics/traceability.csv",
+      "bytes": 9529,
+      "md5": "44757774231a12a66308f5db89a12c30",
+      "rows": 62
+    },
+    {
+      "file": "metrics/transformation_log.json",
+      "bytes": 831,
+      "md5": "bd334a9d1bceb2bbb689c57a84d35c30"
+    },
+    {
+      "file": "metrics/tuning_log.json",
+      "bytes": 59140,
+      "md5": "f3c24b725545c7e6146f78fc6bdc71c5"
+    },
+    {
+      "file": "metrics/validation_curves.csv",
+      "bytes": 1826,
+      "md5": "3eef61f8174a249061d65a2d88ce1c8b",
+      "rows": 24
+    },
+    {
+      "file": "metrics/viva_gap.json",
+      "bytes": 876,
+      "md5": "da999491c9591dd0574fa345608737ea"
+    },
+    {
+      "file": "metrics/window_feature_ablation.json",
+      "bytes": 573,
+      "md5": "7d9ca4280709451ec699a7b5420f1281"
+    },
+    {
+      "file": "metrics/window_feature_bands.csv",
+      "bytes": 440,
+      "md5": "898be3f43c5bd9a34ef73546f94f8f87",
+      "rows": 5
+    },
+    {
+      "file": "models/churn_final.joblib",
+      "bytes": 10029205,
+      "md5": "4643e25056335c48f7d11850e8457e0e"
+    },
+    {
+      "file": "models/clv_next180_final.joblib",
+      "bytes": 276573,
+      "md5": "8c1dd38a212c91170e3437d7f705dc4a"
+    },
+    {
+      "file": "models/fashion_routing_final.joblib",
+      "bytes": 6602,
+      "md5": "4ada64db40a35b528e0b2bf3c2ed1fde"
+    },
+    {
+      "file": "models/home_routing_final.joblib",
+      "bytes": 6346,
+      "md5": "ec8dd135c208242d3fb56b2fbc3508e8"
+    },
+    {
+      "file": "visualisations/apriori_rules.png",
+      "bytes": 190918,
+      "md5": "7d3fd1c3a922bd86e02f77808613ffb1"
+    },
+    {
+      "file": "visualisations/apriori_threshold_sweep.png",
+      "bytes": 92929,
+      "md5": "05ca331ef32e796c7633629978e62000"
+    },
+    {
+      "file": "visualisations/bias_variance_decomposition.png",
+      "bytes": 123927,
+      "md5": "80eb7afde9ce33906311378b992b7178"
+    },
+    {
+      "file": "visualisations/bias_variance_learning_curves.png",
+      "bytes": 222683,
+      "md5": "3c72c472f76bba7e1d40b3774dae6ca0"
+    },
+    {
+      "file": "visualisations/bias_variance_validation_curves.png",
+      "bytes": 148307,
+      "md5": "e6a294ce94f8d395c1ed84cd9ff833f5"
+    },
+    {
+      "file": "visualisations/calibration_reliability.png",
+      "bytes": 146602,
+      "md5": "461b6b727f4e2cab6400ef007d52acd8"
+    },
+    {
+      "file": "visualisations/churn_out_of_time.png",
+      "bytes": 111776,
+      "md5": "33784707b12c53b02fe56900d63bec45"
+    },
+    {
+      "file": "visualisations/churn_threshold_curves.png",
+      "bytes": 223228,
+      "md5": "73acca998d18278a0b00b888b22c20af"
+    },
+    {
+      "file": "visualisations/cluster_elbow_silhouette.png",
+      "bytes": 224516,
+      "md5": "1a6012e7d9d71dfc71621343c5c46796"
+    },
+    {
+      "file": "visualisations/cluster_silhouette_samples.png",
+      "bytes": 55883,
+      "md5": "65dad1a22ca47bed588063a7c75522bb"
+    },
+    {
+      "file": "visualisations/clv_benchmarks.png",
+      "bytes": 191870,
+      "md5": "b33894390fe4d0407ee1d730fb703cb1"
+    },
+    {
+      "file": "visualisations/clv_historical.png",
+      "bytes": 227412,
+      "md5": "5098869b1b5514ea25760e7c9eb89dc9"
+    },
+    {
+      "file": "visualisations/clv_next_period.png",
+      "bytes": 191850,
+      "md5": "d6bf29c65c0e649c6553dba613c98c99"
+    },
+    {
+      "file": "visualisations/clv_prediction_intervals.png",
+      "bytes": 285911,
+      "md5": "bbb09e68ad79338d1efe20a7372b2936"
+    },
+    {
+      "file": "visualisations/cm_churn.png",
+      "bytes": 97058,
+      "md5": "301346356841e546b01d4df773381172"
+    },
+    {
+      "file": "visualisations/cm_churn_default.png",
+      "bytes": 91195,
+      "md5": "b00bc26c51ce050d483c1535ce5575c6"
+    },
+    {
+      "file": "visualisations/cm_fashion.png",
+      "bytes": 93103,
+      "md5": "389d8cddde9c27cade4d23e11b5fe381"
+    },
+    {
+      "file": "visualisations/cm_home.png",
+      "bytes": 101912,
+      "md5": "a5c3103cae07a855c16272c7758610d6"
+    },
+    {
+      "file": "visualisations/eda_E10_viva_vs_shukran.png",
+      "bytes": 122354,
+      "md5": "71a9e00952b161617dadca77c5f5bc21"
+    },
+    {
+      "file": "visualisations/eda_E1_amount_distribution.png",
+      "bytes": 77607,
+      "md5": "9d1e8df7587363c9788adfe7f935b1fc"
+    },
+    {
+      "file": "visualisations/eda_E2_profile.png",
+      "bytes": 128379,
+      "md5": "2e23ad3f711609f0d7018000292b0c66"
+    },
+    {
+      "file": "visualisations/eda_E3_missing_outliers.png",
+      "bytes": 134861,
+      "md5": "75c366d3ae372727d30cf35c0bae0a15"
+    },
+    {
+      "file": "visualisations/eda_E4_correlation.png",
+      "bytes": 405221,
+      "md5": "c1af098dd5168e4412d3726463eb9936"
+    },
+    {
+      "file": "visualisations/eda_E5_rfm.png",
+      "bytes": 78751,
+      "md5": "85d5516a5b8eadc1c11343b801311cbd"
+    },
+    {
+      "file": "visualisations/eda_E6_cohorts_churn.png",
+      "bytes": 91904,
+      "md5": "b9a3ca962adb94d18429c6eccc8b6716"
+    },
+    {
+      "file": "visualisations/eda_E7_banner_kpis.png",
+      "bytes": 111540,
+      "md5": "bb75f005f049f7264a95962c07a19f97"
+    },
+    {
+      "file": "visualisations/eda_E8_discount.png",
+      "bytes": 126905,
+      "md5": "2244f96163bd53baf3650baa870bc902"
+    },
+    {
+      "file": "visualisations/eda_E9_category_crossbanner.png",
+      "bytes": 155987,
+      "md5": "08428f448e03c39037b5fec82672d6ac"
+    },
+    {
+      "file": "visualisations/epsilon_greedy_simulation.png",
+      "bytes": 186326,
+      "md5": "4f0bd7999095f0fb0d955d3104bb9a72"
+    },
+    {
+      "file": "visualisations/fin_banner_ranking.png",
+      "bytes": 121022,
+      "md5": "39b52cbc26a18adbfbd407d677313d31"
+    },
+    {
+      "file": "visualisations/fin_quarterly_revenue.png",
+      "bytes": 131173,
+      "md5": "ea1fced6ad7aaf29b40b067a2cf4fbf1"
+    },
+    {
+      "file": "visualisations/mlp_activations.png",
+      "bytes": 74674,
+      "md5": "c243fd1ff862d281112446dd38f14b2b"
+    },
+    {
+      "file": "visualisations/pair_fashion_trend.png",
+      "bytes": 123823,
+      "md5": "42027cb25fb2a7894b00d00bd1d0d55e"
+    },
+    {
+      "file": "visualisations/pair_home_trend.png",
+      "bytes": 124209,
+      "md5": "31bdbca09f8380b64b971a12f537ee98"
+    },
+    {
+      "file": "visualisations/pca_2d_projection.png",
+      "bytes": 466585,
+      "md5": "cefb33e969dbb26f111baef9a99a53c0"
+    },
+    {
+      "file": "visualisations/pca_loadings_heatmap.png",
+      "bytes": 168767,
+      "md5": "24efc45db7c41a940da5e261d288c729"
+    },
+    {
+      "file": "visualisations/pca_scree_cumulative.png",
+      "bytes": 120784,
+      "md5": "ae3f948a233aea00fd97cb24e3b4901a"
+    },
+    {
+      "file": "visualisations/perm_importance_churn.png",
+      "bytes": 89187,
+      "md5": "4b22291e2d6929fc633039221fcc49b8"
+    },
+    {
+      "file": "visualisations/perm_importance_fashion.png",
+      "bytes": 92914,
+      "md5": "8f7c4a2a957953e266015d9ff00171e1"
+    },
+    {
+      "file": "visualisations/perm_importance_home.png",
+      "bytes": 89419,
+      "md5": "092f67804c5bd0b59d647d76938a8679"
+    },
+    {
+      "file": "visualisations/segments_overview.png",
+      "bytes": 266425,
+      "md5": "416e15242e3564b11799cbb2eb3c8add"
+    },
+    {
+      "file": "visualisations/shukran_churn_drivers.png",
+      "bytes": 219899,
+      "md5": "ac6fd58dee5eabfe079d6aff769b4f37"
+    },
+    {
+      "file": "visualisations/shukran_cohorts_participation.png",
+      "bytes": 100362,
+      "md5": "12d21cd5c7d15531a4cb44bb82d95b60"
+    },
+    {
+      "file": "visualisations/style_segments.png",
+      "bytes": 135766,
+      "md5": "d685984c9257a32dbe84598665f3b720"
+    },
+    {
+      "file": "visualisations/test_confidence_intervals.png",
+      "bytes": 208893,
+      "md5": "4bff8b31f44315fea0e3fe5b834f1085"
+    }
+  ]
+}
