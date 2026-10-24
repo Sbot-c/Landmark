@@ -1,0 +1,9 @@
+banner,revenue_aed,transactions,avg_ticket_aed,discount_rate,revenue_share_pct,reach,reach_basis,rank_revenue,rank_transactions,rank_avg_ticket,category,positioning
+Home Centre,1917969.4,2223,862.7842555105713,0.35177687809266756,34.662202913344274,1072.0,Unique Shukran IDs,1,5,1,Home,Premium home
+Centrepoint,924675.65,2837,325.9343144166373,0.36023968981318294,16.711056500342767,1779.0,Unique Shukran IDs,2,2,2,Department,Mixed department store
+Homebox,744984.02,2580,288.753496124031,0.4073643410852713,13.46360753640748,1263.0,Unique Shukran IDs,3,4,3,Home,Value home
+Viva,649123.57,8174,79.41320895522388,,11.731184501261822,1279.0,Unique Viva Rewards IDs (+ anonymous walk-ins) — NOT comparable,4,1,8,Grocery (Viva),Value grocery (not on Shukran)
+Splash,502931.41,2021,248.85275111331023,0.33448787728847107,9.089149485343375,997.0,Unique Shukran IDs,5,6,4,Fashion,Premium / mid fashion
+Max,282521.34,2588,109.16589644513138,0.3891035548686244,5.105822863717184,1257.0,Unique Shukran IDs,6,3,7,Fashion,Value fashion
+Babyshop,272781.08,1633,167.0429148805879,0.3962033067973056,4.929793533661798,968.0,Unique Shukran IDs,7,8,5,Baby,Mid baby & kids
+Funcity,238330.05,1716,138.88697552447553,0.3747086247086247,4.307182665921305,1040.0,Unique Shukran IDs,8,7,6,Entertainment,Family entertainment

@@ -1,0 +1,29 @@
+{
+  "attempted_join_matches": 0,
+  "viva_rows": 9000,
+  "viva_anonymous_rows": 3138,
+  "viva_anonymous_pct": 34.87,
+  "viva_identified_members": 1284,
+  "viva_identified_revenue_aed": 467837.15,
+  "viva_anonymous_revenue_aed": 246729.5,
+  "core_7_banner_revenue_aed": 9156895.45,
+  "viva_revenue_aed": 714566.65,
+  "total_recorded_revenue_aed": 9871462.1,
+  "viva_share_full_period_pct": 7.24,
+  "common_window": "2025-08-28 to 2026-10-01",
+  "viva_share_common_window_pct": 12.03,
+  "viva_transaction_share_common_window_pct": 35.05,
+  "core_coverage": [
+    "2024-04-15",
+    "2026-10-01"
+  ],
+  "viva_coverage": [
+    "2025-08-28",
+    "2026-10-01"
+  ],
+  "viva_avg_ticket_aed": 79.4,
+  "core_avg_ticket_aed": 313.06,
+  "viva_identified_member_median_tx": 4.0,
+  "viva_identified_member_median_spend_aed": 339.5,
+  "shukran_member_median_spend_common_window_aed": 1399.02
+}

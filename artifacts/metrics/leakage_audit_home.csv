@@ -1,0 +1,9 @@
+feature_set,model,n_features,roc_auc,accuracy
+1 DIRECT leak: + home banner shares (forbidden),Logistic Regression,28,1.0,0.9996472663139329
+1 DIRECT leak: + home banner shares (forbidden),Random Forest,28,1.0,0.9996472663139329
+2 INDIRECT leak: total-spend features & shares over total (forbidden),Logistic Regression,18,0.9890651336090654,0.9540854163940148
+2 INDIRECT leak: total-spend features & shares over total (forbidden),Random Forest,18,0.9715856433461258,0.9219417802456672
+3 CLEAN: non-home behaviour + demographics (permitted),Logistic Regression,25,0.6293105211466653,0.5934283096827266
+3 CLEAN: non-home behaviour + demographics (permitted),Random Forest,25,0.6232413244865678,0.6110955310013025
+4 Demographics only,Logistic Regression,6,0.5423827517244061,0.572943581306361
+4 Demographics only,Random Forest,6,0.5432589088917125,0.5446899869750281

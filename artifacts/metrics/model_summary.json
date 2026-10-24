@@ -1,0 +1,83 @@
+{
+  "churn": {
+    "primary_metric": "pr_auc",
+    "selected_model": "Voting (soft)",
+    "best_cv_model": "Stacking (LR meta)",
+    "one_se": 0.00822490200491436,
+    "selected_cv_primary": 0.5360856276716542,
+    "selected_test": {
+      "accuracy": 0.7693351424694709,
+      "precision": 0.6888888888888889,
+      "recall": 0.1657754010695187,
+      "f1": 0.2672413793103448,
+      "balanced_accuracy": 0.5701604278074865,
+      "roc_auc": 0.7751968886728245,
+      "pr_auc": 0.5481023998775758
+    },
+    "family_winners": {
+      "Single": "SVM (RBF)",
+      "Bagging": "Random Forest",
+      "Boosting": "XGBoost",
+      "Voting": "Voting (soft)",
+      "Stacking": "Stacking (LR meta)"
+    },
+    "summary": "Best single learner: **SVM (RBF)** (cv_pr_auc = 0.4727); best ensemble: **Stacking (LR meta)** (0.5376). Difference = +0.0650 \u2192 material (> 2 pooled SE). Selected for deployment by the 1-SE rule: **Voting (soft)**.",
+    "n_train": 2209,
+    "n_test": 737,
+    "positive_rate": 0.25305568130375733
+  },
+  "home": {
+    "primary_metric": "roc_auc",
+    "selected_model": "Logistic Regression",
+    "best_cv_model": "SVM (linear)",
+    "one_se": 0.010582882784052523,
+    "selected_cv_primary": 0.6313001987136797,
+    "selected_test": {
+      "accuracy": 0.6002824858757062,
+      "precision": 0.5800865800865801,
+      "recall": 0.41875,
+      "f1": 0.4863883847549909,
+      "balanced_accuracy": 0.584375,
+      "roc_auc": 0.6310244845360824,
+      "pr_auc": 0.5664926134942188
+    },
+    "family_winners": {
+      "Single": "SVM (linear)",
+      "Bagging": "Extra Trees",
+      "Boosting": "XGBoost",
+      "Voting": "Voting (soft)",
+      "Stacking": "Stacking (LR meta)"
+    },
+    "summary": "Best single learner: **SVM (linear)** (cv_roc_auc = 0.6314); best ensemble: **Voting (soft)** (0.6282). Difference = -0.0032 \u2192 within noise (\u2264 2 pooled SE). Selected for deployment by the 1-SE rule: **Logistic Regression**.",
+    "n_train": 2123,
+    "n_test": 708,
+    "positive_rate": 0.45219029674988226
+  },
+  "fashion": {
+    "primary_metric": "roc_auc",
+    "selected_model": "Logistic Regression",
+    "best_cv_model": "Extra Trees",
+    "one_se": 0.010593137708427862,
+    "selected_cv_primary": 0.6088899051993846,
+    "selected_test": {
+      "accuracy": 0.5931232091690545,
+      "precision": 0.575,
+      "recall": 0.2987012987012987,
+      "f1": 0.39316239316239315,
+      "balanced_accuracy": 0.5621711621711621,
+      "roc_auc": 0.6087412587412588,
+      "pr_auc": 0.5486588458582446
+    },
+    "family_winners": {
+      "Single": "Logistic Regression",
+      "Bagging": "Extra Trees",
+      "Boosting": "Gradient Boosting",
+      "Voting": "Voting (soft)",
+      "Stacking": "Stacking (LR meta)"
+    },
+    "summary": "Best single learner: **Logistic Regression** (cv_roc_auc = 0.6089); best ensemble: **Extra Trees** (0.6108). Difference = +0.0019 \u2192 within noise (\u2264 2 pooled SE). Selected for deployment by the 1-SE rule: **Logistic Regression**.",
+    "n_train": 2091,
+    "n_test": 698,
+    "positive_rate": 0.4418938307030129
+  }
+}

@@ -1,0 +1,5 @@
+,K-means · raw (15 std. features),K-medoids (Manhattan) · raw (15 std. features),K-means · PCA (9 PCs),K-medoids (Manhattan) · PCA (9 PCs)
+K-means · raw (15 std. features),1.0,0.748,0.994,0.56
+K-medoids (Manhattan) · raw (15 std. features),0.748,1.0,0.748,0.466
+K-means · PCA (9 PCs),0.994,0.748,1.0,0.559
+K-medoids (Manhattan) · PCA (9 PCs),0.56,0.466,0.559,1.0

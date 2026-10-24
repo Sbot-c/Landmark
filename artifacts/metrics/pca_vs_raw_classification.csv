@@ -1,0 +1,13 @@
+target,model,features,cv_pr_auc,train_pr_auc,cv_roc_auc,train_roc_auc
+churn,Logistic Regression,all scaled features,0.45517229533885006,0.48998755409310685,,
+churn,Logistic Regression,PCA (90% var.),0.3702077859918328,0.3906405204456006,,
+churn,SVM (RBF),all scaled features,0.4292547979545537,0.7938046070057198,,
+churn,SVM (RBF),PCA (90% var.),0.39088555008614423,0.7443309093413752,,
+churn,Random Forest,all scaled features,0.5199379610936982,0.9618608089548498,,
+churn,Random Forest,PCA (90% var.),0.39164371869966735,0.9950731491753574,,
+home,Logistic Regression,all scaled features,,,0.6256868455860589,0.6573394378443228
+home,Logistic Regression,PCA (90% var.),,,0.6284707255747126,0.6394822585938733
+home,SVM (RBF),all scaled features,,,0.61289702268635,0.7946296415602178
+home,SVM (RBF),PCA (90% var.),,,0.6029687577080558,0.7543511870473996
+home,Random Forest,all scaled features,,,0.6099043314649008,0.9932906716556176
+home,Random Forest,PCA (90% var.),,,0.6034251324243993,0.9975380442393427

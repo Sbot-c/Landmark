@@ -1,0 +1,36 @@
+{
+  "target_coverage": 0.8,
+  "test_coverage_conformal": 0.7521008403361344,
+  "test_coverage_raw_quantile": 0.7324929971988795,
+  "conformal_widening_aed": 9.012669569292184,
+  "median_width_aed": 1374.1142708198608,
+  "n_calibration": 642,
+  "coverage_by_predicted_quartile": [
+    {
+      "q": "Q1 low",
+      "coverage": 0.7374301675977654,
+      "median_width_aed": 732.0625980679473,
+      "members": 179
+    },
+    {
+      "q": "Q2",
+      "coverage": 0.7752808988764045,
+      "median_width_aed": 947.5393588368156,
+      "members": 178
+    },
+    {
+      "q": "Q3",
+      "coverage": 0.7415730337078652,
+      "median_width_aed": 1572.3504173515016,
+      "members": 178
+    },
+    {
+      "q": "Q4 high",
+      "coverage": 0.7541899441340782,
+      "median_width_aed": 1975.8686555415381,
+      "members": 179
+    }
+  ],
+  "share_point_forecast_inside_own_interval": 0.9996666666666667,
+  "deployment_widening_aed": 55.387987321920704
+}

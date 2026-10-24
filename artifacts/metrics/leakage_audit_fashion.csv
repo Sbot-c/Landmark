@@ -1,0 +1,9 @@
+feature_set,model,n_features,roc_auc,accuracy
+1 DIRECT leak: + fashion banner shares (forbidden),Logistic Regression,28,1.0,0.9996415770609319
+1 DIRECT leak: + fashion banner shares (forbidden),Random Forest,28,1.0,1.0
+2 INDIRECT leak: total-spend features & shares over total (forbidden),Logistic Regression,18,0.9586783011170779,0.9017586533078512
+2 INDIRECT leak: total-spend features & shares over total (forbidden),Random Forest,18,0.8807842799095292,0.7963520652754451
+3 CLEAN: non-fashion behaviour + demographics (permitted),Logistic Regression,25,0.6031357626313028,0.5905400796638418
+3 CLEAN: non-fashion behaviour + demographics (permitted),Random Forest,25,0.595489566358621,0.5923276899416356
+4 Demographics only,Logistic Regression,6,0.5260441065403989,0.567233579789322
+4 Demographics only,Random Forest,6,0.5155143303218119,0.5353197814714002

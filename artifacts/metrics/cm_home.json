@@ -1,0 +1,12 @@
+{
+  "model": "Logistic Regression",
+  "threshold": 0.5,
+  "tn": 291,
+  "fp": 97,
+  "fn": 186,
+  "tp": 134,
+  "labels": [
+    "Homebox (0)",
+    "Home Centre (1)"
+  ]
+}
