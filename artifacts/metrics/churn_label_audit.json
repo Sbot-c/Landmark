@@ -1,0 +1,13 @@
+{
+  "members": 3000,
+  "churned": 747,
+  "churn_rate": 0.249,
+  "majority_class_accuracy": 0.751,
+  "rule_agreement_pct": 94.6,
+  "churned_but_bought_within_90d": 127,
+  "churned_but_bought_within_60d": 111,
+  "active_but_overdue_over_90d": 35,
+  "excluded_no_history_at_reference": 54,
+  "excluded_churn_rate": 0.018518518518518517,
+  "included_churn_rate": 0.253224711473184
+}
