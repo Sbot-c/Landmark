@@ -1,6 +1,0 @@
-target,metric,comparison,A,B,diff,ci_low,ci_high,share_A_better,verdict
-churn,pr_auc,deployed vs best-CV model,Voting (soft),Stacking (LR meta),-0.014886966141945623,-0.030159518891850652,0.002120582695261358,0.043,no clear difference (CI includes 0)
-churn,pr_auc,best ensemble vs best single learner,Stacking (LR meta),SVM (RBF),0.056053088911723004,0.010785736884021924,0.09754653945296414,0.995,A better
-home,roc_auc,deployed vs best-CV model,Logistic Regression,SVM (linear),0.004147873711340178,-0.0029882812499999745,0.012018766108247432,0.851,no clear difference (CI includes 0)
-home,roc_auc,best ensemble vs best single learner,Voting (soft),SVM (linear),0.004880798969072231,-0.007270256121134078,0.017874114046391783,0.751,no clear difference (CI includes 0)
-fashion,roc_auc,deployed vs best-CV model,Logistic Regression,Extra Trees,0.001756576756576811,-0.023527722277722353,0.028727730602730664,0.542,no clear difference (CI includes 0)

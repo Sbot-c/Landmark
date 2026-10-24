@@ -1,9 +1,0 @@
-design,model,n,roc_auc,pr_auc,prevalence
-A concurrent · all features,Logistic Regression,3000,0.9062552255352123,0.8669514448545514,0.249
-A concurrent · all features,Random Forest,3000,0.8988956106820373,0.848549496684333,0.249
-B concurrent · minus recency_days,Logistic Regression,3000,0.9076948141093368,0.8577672695039855,0.249
-B concurrent · minus recency_days,Random Forest,3000,0.9003076499484945,0.8522836703066654,0.249
-C concurrent · minus all recent-window features,Logistic Regression,3000,0.558316118152111,0.2935940674651266,0.249
-C concurrent · minus all recent-window features,Random Forest,3000,0.6007722765274836,0.3471672236379975,0.249
-D early-warning · features at as-of − 90 days,Logistic Regression,2946,0.696652654057352,0.46829084185948383,0.253224711473184
-D early-warning · features at as-of − 90 days,Random Forest,2946,0.7472848078096401,0.5229688417189527,0.253224711473184

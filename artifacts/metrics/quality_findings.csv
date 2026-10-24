@@ -1,6 +1,0 @@
-finding,count,detail,decision
-Transactions dated before the member's signup_date,1844,6.3% of rows; 597 customers; median 41 days early,Retained (revenue is real; may be retro-claimed receipts or a signup-date entry issue). Flagged; tenure features use signup_date as supplied.
-tenure_months vs months since signup_date,0,rows differing by more than 1 month,"Consistent: tenure_months is a deterministic function of signup_date (redundant — use one, not both, in the same model)."
-Viva anonymous (unscanned) baskets,3138,34.9% of Viva rows,Expected by design (walk-ins). Retained for Group revenue; unusable for any customer-level analysis.
-Transaction history starts after most signups,1946,customers who joined before 2024-04-15 (first transaction in file),"Behaviour before the first recorded date is unobserved; cohort analysis is about signup timing, not lifetime spend."
-Partial final quarter,3,Shukran rows in 2026-Q4 (data end 2026-10-01 = 1 day of the quarter),Flagged everywhere; never compared with complete quarters.
