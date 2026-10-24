@@ -1,0 +1,24 @@
+# Landmark Customer Intelligence Engine — tested version ranges
+# Lower bounds = the older stack the project was re-run on (Python 3.11, see tests/compat_report.md);
+# the submitted run used the newest versions in requirements-lock.txt (Python 3.13).
+# Versions between the two were not individually tested.
+pandas>=2.2.3              # tested 2.2.3 and 3.0.5
+numpy>=1.26.4              # tested 1.26.4 and 2.5.3
+scipy>=1.13.1              # tested 1.13.1 and 1.18.1
+scikit-learn>=1.6.1        # TunedThresholdClassifierCV needs >=1.5; tested 1.6.1 and 1.9.1
+mlxtend>=0.23.4            # association_rules(num_itemsets=...), bias_variance_decomp; tested 0.23.4 and 0.25.0
+xgboost>=2.1.4             # first release compatible with scikit-learn 1.6+; tested 2.1.4 and 3.4.1
+kmedoids>=0.5.3.1          # K-medoids with Manhattan distance; tested 0.5.3.1 and 0.5.5
+matplotlib>=3.8.4          # tested 3.8.4 and 3.11.2
+seaborn>=0.13.2            # tested 0.13.2
+joblib>=1.4.2              # tested 1.4.2 and 1.6.0
+pyarrow>=17                # parquet artifacts; tested 17 and 26
+streamlit>=1.45.1          # st.navigation / st.Page; tested 1.45.1 and 1.66.1
+plotly>=5.24.1             # tested 5.24.1 and 7.1.0
+# to re-execute the notebook from the command line
+nbconvert>=7.16           # tested 7.16.4 and 7.17.2
+ipykernel>=6.29           # tested 6.29.5 and 7.4.0
+# tests (tests/test_core.py, tests/test_dashboard.py, tests/run_all_checks.py)
+pytest>=8.3
+playwright>=1.48           # then: python -m playwright install chromium
+# optional: Graphviz system package provides the `dot` executable used by pipeline_diagram/build_diagram.py

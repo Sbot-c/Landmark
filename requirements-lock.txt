@@ -1,0 +1,23 @@
+# Exact versions used for the submitted run (Python 3.13.16, Linux). Install with:
+#   pip install -r requirements-lock.txt
+# For a looser install that was also tested on an older stack, use requirements.txt (see tests/compat_report.md).
+pandas==3.0.5
+numpy==2.5.3
+scipy==1.18.1
+scikit-learn==1.9.1
+mlxtend==0.25.0
+xgboost==3.4.1
+kmedoids==0.5.5
+matplotlib==3.11.2
+seaborn==0.13.2
+joblib==1.6.0
+pyarrow==26.0.0
+streamlit==1.66.1
+plotly==7.1.0
+nbconvert==7.17.2
+nbformat==5.11.1
+ipykernel==7.4.0
+# verification only
+pytest==9.1.1
+playwright==1.56.0
+Pillow==12.3.0
