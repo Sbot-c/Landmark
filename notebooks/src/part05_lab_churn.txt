@@ -1,0 +1,312 @@
+%%MD
+## §10 · Classification laboratory — common protocol, then Target A: churn
+
+### 10.1 One protocol for every target
+* **Split:** stratified 75 / 25 train/test (`random_state=42`). The **test set is not touched** until model selection is locked.
+* **Tuning:** `GridSearchCV` on the training set only, stratified 5-fold CV, optimising the target's predeclared primary metric (churn: **PR-AUC**, because positives are the minority and the operating threshold is set later by cost; routing: **ROC-AUC**, because classes are near-balanced and the decision is symmetric).
+* **Evaluation:** the tuned configuration is re-scored with `cross_validate` on the same folds for accuracy, precision, recall, F1, balanced accuracy, ROC-AUC and PR-AUC, with train-fold scores kept for the bias–variance diagnosis.
+* **Preprocessing inside the pipeline:** median imputation (+ missing-indicators), standard scaling for numeric features (needed by LR, KNN, SVM, MLP; harmless for trees) and one-hot encoding for categoricals — re-fitted inside every CV fold, so nothing leaks from validation folds.
+* **SVM probabilities:** `SVC(probability=True)` is deprecated in scikit-learn 1.9, so SVMs are tuned on their decision function and wrapped in `CalibratedClassifierCV(method="sigmoid", ensemble=False)` (Platt scaling fitted on internal CV) whenever probabilities are needed.
+* **Model line-up:** 7 single learners (LR, Decision Tree, KNN — Euclidean *and* Manhattan in the grid, SVM-linear, SVM-RBF, Gaussian NB, MLP), **Bagging** (Random Forest, Extra Trees, bagged trees), **Boosting** (AdaBoost, Gradient Boosting, XGBoost), **Voting** (soft and hard, built from the tuned LR + RF + SVM + best booster) and **Stacking** (LR meta-learner on out-of-fold base predictions, with and without passthrough).
+* **Selection (predeclared):** the *one-standard-error rule* — among models whose CV primary score is within one standard error of the best, choose the least complex. This prevents declaring a complex ensemble the winner on a difference that is just fold noise. Ranks use `method="min"` (rank 1 = best; ties share the better rank).
+
+%%CODE
+from sklearn.base import clone
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, cross_validate, cross_val_predict
+from sklearn.metrics import (make_scorer, accuracy_score, precision_score, recall_score, f1_score, balanced_accuracy_score,
+                             roc_auc_score, average_precision_score, confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve)
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import (RandomForestClassifier, ExtraTreesClassifier, BaggingClassifier, AdaBoostClassifier,
+                              GradientBoostingClassifier, VotingClassifier, StackingClassifier)
+from sklearn.inspection import permutation_importance
+import joblib
+
+CV_FOLDS = 3 if FAST else 5
+N_JOBS = 2
+BOOT = 300 if FAST else 1000      # bootstrap resamples for confidence intervals (§10.5, §10.6, §13.9, §14.4)
+SCORERS = {"accuracy": "accuracy", "precision": make_scorer(precision_score, zero_division=0),
+           "recall": make_scorer(recall_score, zero_division=0), "f1": make_scorer(f1_score, zero_division=0),
+           "balanced_accuracy": "balanced_accuracy", "roc_auc": "roc_auc", "pr_auc": "average_precision"}
+METRIC_NAMES = list(SCORERS)
+NO_PROBA = {k: v for k, v in SCORERS.items() if k not in ("roc_auc", "pr_auc")}
+COMPLEXITY = {"Gaussian NB": 1, "Logistic Regression": 2, "SVM (linear)": 3, "Decision Tree": 3, "KNN": 4, "SVM (RBF)": 5,
+              "MLP": 6, "Random Forest": 7, "Extra Trees": 7, "Bagged Trees": 7, "AdaBoost": 8, "Gradient Boosting": 8,
+              "XGBoost": 8, "Voting (soft)": 9, "Voting (hard)": 9, "Stacking (LR meta)": 10, "Stacking (LR meta + passthrough)": 10}
+TUNING_LOG = {}
+
+def shrink(grid):
+    """FAST (developer) mode keeps two values per hyper-parameter — but always all four MLP activations."""
+    return {k: (v if k == "m__activation" else v[:2]) for k, v in grid.items()} if FAST else grid
+
+def make_prep(num, cat):
+    return ColumnTransformer([
+        ("num", Pipeline([("impute", SimpleImputer(strategy="median", add_indicator=True)), ("scale", StandardScaler())]), num),
+        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat)], verbose_feature_names_out=False)
+
+def model_specs():
+    s = {
+     "Logistic Regression": ("Single", LogisticRegression(max_iter=3000), {"m__C": [0.01, 0.1, 1, 10], "m__class_weight": [None, "balanced"]}),
+     "Decision Tree": ("Single", DecisionTreeClassifier(random_state=SEED), {"m__max_depth": [3, 5, 8, None], "m__min_samples_leaf": [1, 10, 30], "m__class_weight": [None, "balanced"]}),
+     "KNN": ("Single", KNeighborsClassifier(), {"m__n_neighbors": [15, 31, 51, 5], "m__weights": ["uniform", "distance"], "m__metric": ["euclidean", "manhattan"]}),
+     "SVM (linear)": ("Single", SVC(kernel="linear", random_state=SEED), {"m__C": [0.01, 0.1, 1], "m__class_weight": [None, "balanced"]}),
+     "SVM (RBF)": ("Single", SVC(kernel="rbf", random_state=SEED), {"m__C": [0.3, 1, 3, 10], "m__gamma": ["scale", 0.01, 0.05], "m__class_weight": [None, "balanced"]}),
+     "Gaussian NB": ("Single", GaussianNB(), {"m__var_smoothing": [1e-9, 1e-6, 1e-3]}),
+     "MLP": ("Single", MLPClassifier(max_iter=300, early_stopping=True, n_iter_no_change=15, random_state=SEED),
+             {"m__activation": ["identity", "logistic", "tanh", "relu"], "m__hidden_layer_sizes": [(32,), (32, 16)], "m__alpha": [1e-4, 1e-2]}),
+     "Random Forest": ("Bagging", RandomForestClassifier(n_estimators=300, random_state=SEED, n_jobs=1),
+                       {"m__max_depth": [None, 8], "m__min_samples_leaf": [1, 5, 15], "m__max_features": ["sqrt", 0.5]}),
+     "Extra Trees": ("Bagging", ExtraTreesClassifier(n_estimators=300, random_state=SEED, n_jobs=1),
+                     {"m__max_depth": [None, 8], "m__min_samples_leaf": [1, 5, 15], "m__max_features": ["sqrt", 0.5]}),
+     "Bagged Trees": ("Bagging", BaggingClassifier(DecisionTreeClassifier(random_state=SEED), n_estimators=150, random_state=SEED, n_jobs=1),
+                      {"m__max_samples": [0.6, 1.0], "m__estimator__max_depth": [None, 8]}),
+     "AdaBoost": ("Boosting", AdaBoostClassifier(random_state=SEED), {"m__n_estimators": [100, 300], "m__learning_rate": [0.05, 0.3, 1.0]}),
+     "Gradient Boosting": ("Boosting", GradientBoostingClassifier(random_state=SEED, subsample=0.8),
+                           {"m__n_estimators": [100, 300], "m__learning_rate": [0.03, 0.1], "m__max_depth": [2, 3]}),
+    }
+    if HAS_XGB:
+        s["XGBoost"] = ("Boosting", XGBClassifier(eval_metric="logloss", random_state=SEED, n_jobs=1, tree_method="hist", subsample=0.8, colsample_bytree=0.8),
+                        {"m__n_estimators": [200, 400], "m__max_depth": [2, 4], "m__learning_rate": [0.03, 0.1]})
+    return {k: (f, e, shrink(g)) for k, (f, e, g) in s.items()}
+
+def calibrated(est):
+    """Platt-scaled SVM so it exposes predict_proba (needed for soft voting, PR curves, thresholds)."""
+    return CalibratedClassifierCV(clone(est), method="sigmoid", cv=3, ensemble=False)
+
+def score_row(name, family, pipe, Xtr, ytr, skf, scorers, params, t0):
+    r = cross_validate(pipe, Xtr, ytr, cv=skf, scoring=scorers, return_train_score=True, n_jobs=N_JOBS)
+    row = {"model": name, "family": family, "complexity": COMPLEXITY[name], "best_params": params}
+    for m in METRIC_NAMES:
+        row[f"cv_{m}"] = r[f"test_{m}"].mean() if f"test_{m}" in r else np.nan
+        row[f"cv_{m}_std"] = r[f"test_{m}"].std() if f"test_{m}" in r else np.nan
+        row[f"train_{m}"] = r[f"train_{m}"].mean() if f"train_{m}" in r else np.nan
+    row["tune_and_cv_seconds"] = round(time.time() - t0, 1)
+    return row
+
+def run_lab(target, X, y, num, cat, primary):
+    t_start = time.time()
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.25, stratify=y, random_state=SEED)
+    skf = StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED)
+    prep = make_prep(num, cat)
+    rows, configs, grids = [], {}, {}
+    for name, (fam, est, grid) in model_specs().items():
+        t0 = time.time()
+        gs = GridSearchCV(Pipeline([("prep", prep), ("m", est)]), grid, scoring=SCORERS[primary], cv=skf, n_jobs=N_JOBS, refit=False, return_train_score=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore"); gs.fit(Xtr, ytr)
+        grids[name] = pd.DataFrame(gs.cv_results_)
+        tuned = Pipeline([("prep", prep), ("m", clone(est))]).set_params(**gs.best_params_)
+        if name.startswith("SVM"):
+            tuned = Pipeline([("prep", prep), ("m", calibrated(tuned.named_steps["m"]))])
+        configs[name] = tuned
+        rows.append(score_row(name, fam, tuned, Xtr, ytr, skf, SCORERS, str({k[3:]: v for k, v in gs.best_params_.items()}), t0))
+    # --- Voting and stacking, built from individually tuned and evaluated members ---
+    lb0 = pd.DataFrame(rows).set_index("model")
+    boost_best = lb0[lb0.family == "Boosting"][f"cv_{primary}"].idxmax()
+    m_lr, m_rf = configs["Logistic Regression"].named_steps["m"], configs["Random Forest"].named_steps["m"]
+    m_svm_cal = configs["SVM (RBF)"].named_steps["m"]; m_svm_raw = m_svm_cal.estimator
+    m_boost, m_knn = configs[boost_best].named_steps["m"], configs["KNN"].named_steps["m"]
+    members = f"LR + RF + SVM-RBF + {boost_best}"
+    ens = {
+        "Voting (soft)": ("Voting", VotingClassifier([("lr", m_lr), ("rf", m_rf), ("svm", m_svm_cal), ("boost", m_boost)], voting="soft"), SCORERS, members),
+        "Voting (hard)": ("Voting", VotingClassifier([("lr", m_lr), ("rf", m_rf), ("svm", m_svm_raw), ("boost", m_boost)], voting="hard"), NO_PROBA, members),
+        "Stacking (LR meta)": ("Stacking", StackingClassifier([("lr", m_lr), ("rf", m_rf), ("svm", m_svm_raw), ("boost", m_boost), ("knn", m_knn)],
+                                final_estimator=LogisticRegression(max_iter=2000), cv=StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED + 1), n_jobs=1), SCORERS, members + " + KNN; meta = LR"),
+        "Stacking (LR meta + passthrough)": ("Stacking", StackingClassifier([("lr", m_lr), ("rf", m_rf), ("svm", m_svm_raw), ("boost", m_boost), ("knn", m_knn)],
+                                final_estimator=LogisticRegression(max_iter=2000, C=0.1), cv=StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED + 1),
+                                passthrough=True, n_jobs=1), SCORERS, members + " + KNN; meta = LR(C=0.1) + raw features"),
+    }
+    for name, (fam, est, scorers, desc) in ens.items():
+        t0 = time.time(); pipe = Pipeline([("prep", prep), ("m", est)]); configs[name] = pipe
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore"); rows.append(score_row(name, fam, pipe, Xtr, ytr, skf, scorers, desc, t0))
+    lb = pd.DataFrame(rows)
+    pm = f"cv_{primary}"
+    for m in METRIC_NAMES:
+        lb[f"rank_{m}"] = lb[f"cv_{m}"].rank(ascending=False, method="min").astype("Int64")
+    lb["gap_train_minus_cv"] = lb[f"train_{primary}"] - lb[pm]
+    best_row = lb.loc[lb[pm].idxmax()]
+    se = best_row[f"{pm}_std"] / np.sqrt(CV_FOLDS)
+    within = lb[lb[pm] >= best_row[pm] - se]
+    selected = within.sort_values(["complexity", pm], ascending=[True, False]).iloc[0]["model"]
+    lb["status"] = np.where(lb.model == selected, "SELECTED (1-SE rule)", np.where(lb.model == best_row.model, "best CV score", ""))
+    fam_win = lb.loc[lb.groupby("family")[pm].idxmax()].set_index("family").reindex(["Single", "Bagging", "Boosting", "Voting", "Stacking"])
+    TUNING_LOG[target] = {n: g.sort_values("rank_test_score").head(5)[["params", "mean_test_score", "std_test_score", "mean_train_score"]].to_dict("records") for n, g in grids.items()}
+    print(f"[{target}] lab finished in {time.time() - t_start:.0f}s — selection locked: {selected} (best CV: {best_row.model}; 1 SE = {se:.4f})")
+    return {"target": target, "primary": primary, "Xtr": Xtr, "Xte": Xte, "ytr": ytr, "yte": yte, "num": num, "cat": cat,
+            "leaderboard": lb, "configs": configs, "grids": grids, "selected": selected, "best_cv": best_row.model,
+            "se": se, "family_winners": fam_win, "skf": skf}
+
+def evaluate_test(lab):
+    """Post-selection evaluation on the untouched test set (selection was locked in run_lab)."""
+    out, fitted = [], {}
+    for name, pipe in lab["configs"].items():
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore"); mdl = clone(pipe).fit(lab["Xtr"], lab["ytr"])
+        fitted[name] = mdl
+        pred = mdl.predict(lab["Xte"]); yte = lab["yte"]
+        proba = mdl.predict_proba(lab["Xte"])[:, 1] if hasattr(mdl, "predict_proba") and not name.endswith("(hard)") else None
+        out.append({"model": name, "test_accuracy": accuracy_score(yte, pred), "test_precision": precision_score(yte, pred, zero_division=0),
+                    "test_recall": recall_score(yte, pred, zero_division=0), "test_f1": f1_score(yte, pred, zero_division=0),
+                    "test_balanced_accuracy": balanced_accuracy_score(yte, pred),
+                    "test_roc_auc": roc_auc_score(yte, proba) if proba is not None else np.nan,
+                    "test_pr_auc": average_precision_score(yte, proba) if proba is not None else np.nan})
+    lab["leaderboard"] = lab["leaderboard"].merge(pd.DataFrame(out), on="model")
+    lab["fitted"] = fitted
+    return lab
+
+def ens_compare(lab):
+    """Best single learner vs best ensemble on the primary CV metric, judged against 2 pooled standard errors."""
+    lb, pm = lab["leaderboard"], f"cv_{lab['primary']}"
+    single = lb.loc[lb[lb.family == "Single"][pm].idxmax()]; ens = lb.loc[lb[lb.family != "Single"][pm].idxmax()]   # idxmax skips NaN (hard voting has no AUC)
+    diff = ens[pm] - single[pm]; pooled = np.sqrt(ens[f"{pm}_std"] ** 2 + single[f"{pm}_std"] ** 2) / np.sqrt(CV_FOLDS)
+    if diff > 2 * pooled:
+        phrase = f"**beat** the best single learner by {diff:+.3f} (more than 2 pooled standard errors — a material gain)"
+    elif diff < -2 * pooled:
+        phrase = f"were **materially worse** than the best single learner ({diff:+.3f}, beyond 2 pooled standard errors)"
+    else:
+        phrase = f"did **not materially beat** the best single learner ({diff:+.3f}, within 2 pooled standard errors — i.e. noise)"
+    return single, ens, diff, pooled, phrase
+
+def report_lab(lab, fname):
+    lb, pm = lab["leaderboard"], f"cv_{lab['primary']}"
+    lb.to_csv(L.METRICS / f"leaderboard_{fname}.csv", index=False)
+    lab["family_winners"].to_csv(L.METRICS / f"family_winners_{fname}.csv")
+    show = ["model", "family", f"cv_{lab['primary']}", f"cv_{lab['primary']}_std", "cv_accuracy", "cv_precision", "cv_recall", "cv_f1",
+            "cv_balanced_accuracy", "cv_roc_auc", "cv_pr_auc", f"train_{lab['primary']}", "gap_train_minus_cv", "tune_and_cv_seconds", "status"]
+    display(Markdown(f"**Leaderboard — {fname}** (cross-validated on the training set; sorted by the primary metric `{lab['primary']}`)"))
+    display(lb.sort_values(pm, ascending=False)[show].round(3).reset_index(drop=True))
+    ranks = lb.set_index("model")[[f"rank_{m}" for m in ["accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"]]].sort_values(f"rank_{lab['primary']}")
+    display(Markdown("**Separate numeric rankings** (rank 1 = best CV score; hard voting has no probabilities → no AUC rank)")); display(ranks)
+    fw = lab["family_winners"][["model", pm, f"{pm}_std", "cv_f1", "cv_recall"]]
+    display(Markdown("**Winner within each family**")); display(fw.round(4))
+    single, ens, diff, pooled, _ = ens_compare(lab)
+    verdict = "material (> 2 pooled SE)" if abs(diff) > 2 * pooled else "within noise (≤ 2 pooled SE)"
+    msg = (f"Best single learner: **{single.model}** ({pm} = {single[pm]:.4f}); best ensemble: **{ens.model}** ({ens[pm]:.4f}). "
+           f"Difference = {diff:+.4f} → {verdict}. Selected for deployment by the 1-SE rule: **{lab['selected']}**.")
+    display(Markdown(msg)); lab["summary"] = msg
+    return lab
+
+def show_test(lab, fname):
+    lb = lab["leaderboard"].sort_values(f"cv_{lab['primary']}", ascending=False)
+    cols = ["model", "family", f"cv_{lab['primary']}", "test_accuracy", "test_precision", "test_recall", "test_f1", "test_balanced_accuracy", "test_roc_auc", "test_pr_auc", "status"]
+    display(Markdown(f"**Post-selection test-set evaluation — {fname}** (n = {len(lab['yte'])}; threshold 0.5)")); display(lb[cols].round(3).reset_index(drop=True))
+    lab["leaderboard"].to_csv(L.METRICS / f"leaderboard_{fname}.csv", index=False)
+
+def plot_confusion(lab, fname, labels, title, threshold=0.5):
+    mdl = lab["fitted"][lab["selected"]]
+    pred = (mdl.predict_proba(lab["Xte"])[:, 1] >= threshold).astype(int)
+    cm = confusion_matrix(lab["yte"], pred, labels=[0, 1])
+    fig, ax = plt.subplots(1, 2, figsize=(11, 4.4))
+    for a, norm, sub in [(ax[0], None, "counts"), (ax[1], "true", "row-normalised (share of actual class)")]:
+        ConfusionMatrixDisplay.from_predictions(lab["yte"], pred, labels=[0, 1], display_labels=labels, normalize=norm, cmap="Blues", ax=a, colorbar=True,
+                                                values_format=None if norm is None else ".1%")
+        a.set_title(f"{title}\n{lab['selected']} · threshold {threshold:.2f} · {sub}", fontsize=10); a.grid(False)
+        a.set_xlabel("Predicted class"); a.set_ylabel("Actual class")
+    save(fig, f"cm_{fname}")
+    tn, fp, fn, tp = cm.ravel()
+    L.save_json({"model": lab["selected"], "threshold": threshold, "tn": tn, "fp": fp, "fn": fn, "tp": tp, "labels": labels}, L.METRICS / f"cm_{fname}.json")
+    return cm
+
+def perm_importance(lab, fname, top=15):
+    mdl = lab["fitted"][lab["selected"]]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pi = permutation_importance(mdl, lab["Xte"], lab["yte"], scoring=SCORERS[lab["primary"]], n_repeats=5 if FAST else 10, random_state=SEED, n_jobs=N_JOBS)
+    imp = pd.DataFrame({"feature": lab["Xte"].columns, "importance_mean": pi.importances_mean, "importance_std": pi.importances_std}).sort_values("importance_mean", ascending=False)
+    imp.to_csv(L.METRICS / f"perm_importance_{fname}.csv", index=False)
+    t = imp.head(top)[::-1]
+    fig, ax = plt.subplots(figsize=(8.5, 0.32 * len(t) + 1.2))
+    ax.barh(t.feature, t.importance_mean, xerr=t.importance_std, color=L.SERIES[0], error_kw={"elinewidth": 0.8, "ecolor": L.UI["slate"]})
+    ax.axvline(0, color=L.UI["slate"], lw=0.8)
+    ax.set(title=f"Permutation importance on the test set — {fname} ({lab['selected']})", xlabel=f"Drop in test {lab['primary']} when the feature is shuffled")
+    save(fig, f"perm_importance_{fname}")
+    return imp
+
+%%MD
+### 10.2 Target A — churn. First: what does the label actually encode?
+`churned` is an *observed status* supplied with the data. Before modelling, check how it relates to recency at the as-of date.
+
+%%CODE
+lab_evidence = cv.groupby("recency_band", observed=True).agg(members=("churned", "size"), churn_rate_pct=("churned", lambda s: s.mean() * 100)).round(1)
+display(lab_evidence)
+inactive90 = (cv.recency_days > 90).astype(int)
+agree_rule = (inactive90 == cv.churned).mean()
+print(f"A one-line rule 'churned = no purchase in the last 90 days' agrees with the supplied label for {agree_rule*100:.1f}% of members.")
+
+%%MD
+The label is almost exactly *"no purchase in the 90 days before the as-of date"*. Any model given recency (or any recent-window count) at the as-of date would mostly **reconstruct the label** rather than predict anything — a high score that is useless to a retention team, because by then the customer has already lapsed.
+
+**Leakage audit (designs compared with quick, untuned LR and RF, 5-fold CV on all members):**
+* **A — Concurrent, all features** at 2026-10-01 (includes recency).
+* **B — Concurrent, recency removed** (but 90-day counts and the overdue ratio remain).
+* **C — Concurrent, every recent-window feature removed.**
+* **D — Early-warning (temporal) design:** features frozen at **2026-07-03 (as-of date − 90 days)**; the label is the status 90 days later. Nothing from the label-defining window is visible: the model predicts the status 90 days ahead from information available at that date. **D is the design used for the churn lab.** (§10.6 shows that many churners had already stopped buying *before* 2026-07-03, so in practice the model mostly detects lapses that are already under way — still a useful early warning, but not a long-range forecast.)
+
+%%CODE
+REF_CHURN = OBS_DATE - pd.Timedelta(days=90)
+cv_ref = L.build_customer_view(cust, tx_a, REF_CHURN)
+CHURN_NUM = ["age", "family_size", "has_kids", "days_member_ref", "recency_days", "recency_gap_ratio", "mean_gap_days", "days_since_first",
+             "purchase_rate_30d", "log_spend_rate_30d", "log_avg_ticket", "discount_rate", "n_banners", "n_categories", "banner_hhi",
+             "f90", "f180", "log_spend90", "log_spend180", "trend90"] + [f"bshare_{b}" for b in L.CORE_BANNERS]
+CHURN_CAT = ["gender", "emirate"]
+RECENT_WINDOW = ["recency_days", "recency_gap_ratio", "f90", "f180", "log_spend90", "log_spend180", "trend90"]
+cv_now = cv.copy(); cv_now["days_member_ref"] = (OBS_DATE - cv_now.signup_date).dt.days
+designs = {
+    "A concurrent · all features": (cv_now, CHURN_NUM),
+    "B concurrent · minus recency_days": (cv_now, [c for c in CHURN_NUM if c != "recency_days"]),
+    "C concurrent · minus all recent-window features": (cv_now, [c for c in CHURN_NUM if c not in RECENT_WINDOW]),
+    "D early-warning · features at as-of − 90 days": (cv_ref[cv_ref.has_tx == 1], CHURN_NUM),
+}
+audit_rows = []
+skf5 = StratifiedKFold(5, shuffle=True, random_state=SEED)
+for dname, (df, cols) in designs.items():
+    for mname, est in [("Logistic Regression", LogisticRegression(max_iter=3000)), ("Random Forest", RandomForestClassifier(300, min_samples_leaf=5, random_state=SEED, n_jobs=N_JOBS))]:
+        r = cross_validate(Pipeline([("prep", make_prep(cols, CHURN_CAT)), ("m", est)]), df[cols + CHURN_CAT], df.churned, cv=skf5, scoring={"roc_auc": "roc_auc", "pr_auc": "average_precision"})
+        audit_rows.append({"design": dname, "model": mname, "n": len(df), "roc_auc": r["test_roc_auc"].mean(), "pr_auc": r["test_pr_auc"].mean(),
+                           "prevalence": df.churned.mean()})
+leak_churn = pd.DataFrame(audit_rows)
+leak_churn.to_csv(L.METRICS / "leakage_audit_churn.csv", index=False)
+leak_churn.round(3)
+
+%%MD
+**Reading the audit.** Designs A and B score far above D because the label's own 90-day window is visible to them — removing `recency_days` alone changes almost nothing, because 90-day purchase counts and the "overdue" ratio carry the same information. Design C, with every recent-window feature removed, collapses towards chance: the concurrent models' apparent skill came almost entirely from the label window. Design D sits in between and is the honest number for an early-warning tool. Customers with no purchase before the reference date are excluded from training (they cannot be scored at that date) but are scored by the deployed model at the as-of date (§13.4).
+
+### 10.3 Churn model laboratory (design D)
+
+%%CODE
+churn_df = cv_ref[cv_ref.has_tx == 1].copy()
+print(f"Reference date {REF_CHURN.date()} · members with history: {len(churn_df):,} of {len(cv_ref):,} · churn prevalence {churn_df.churned.mean():.3f}")
+lab_churn = run_lab("churn", churn_df[CHURN_NUM + CHURN_CAT], churn_df.churned, CHURN_NUM, CHURN_CAT, primary="pr_auc")
+lab_churn = report_lab(lab_churn, "churn")
+
+%%CODE
+lab_churn = evaluate_test(lab_churn)
+show_test(lab_churn, "churn")
+cm_churn05 = plot_confusion(lab_churn, "churn_default", ["Active (0)", "Churned (1)"], "Churn — default threshold")
+imp_churn = perm_importance(lab_churn, "churn")
+
+%%CODE
+# Reflection — churn lab (numbers pulled from the results above, so the text cannot drift from the outputs)
+lbc = lab_churn["leaderboard"]; selc = lbc.set_index("model").loc[lab_churn["selected"]]
+bs, be, _, _, ens_phrase = ens_compare(lab_churn)
+FEAT_TXT = {"recency_days": "days since the last purchase", "days_since_first": "days since the first recorded purchase", "recency_gap_ratio": "recency relative to the member's usual gap",
+            "days_member_ref": "length of membership", "purchase_rate_30d": "purchase rate", "mean_gap_days": "usual gap between purchases", "log_spend90": "spend in the last 90 days",
+            "log_spend180": "spend in the last 180 days", "log_spend_rate_30d": "spend rate", "f90": "purchases in the last 90 days", "f180": "purchases in the last 180 days",
+            "trend90": "change in purchase count vs the previous 90 days", "discount_rate": "discount share", "n_banners": "number of banners used", "log_avg_ticket": "average ticket"}
+fam = lab_churn["family_winners"]
+top_feats = ", ".join(imp_churn.feature.head(5))
+display(Markdown(f"""**Reflection — which model type won churn, and did ensembles beat single models?**
+* Selected (1-SE rule): **{lab_churn['selected']}** — CV PR-AUC {selc.cv_pr_auc:.3f}, test PR-AUC {selc.test_pr_auc:.3f}, test ROC-AUC {selc.test_roc_auc:.3f} (no-skill PR-AUC = churn prevalence ≈ {lab_churn['ytr'].mean():.2f}).
+* Best single learner: **{bs.model}** (CV PR-AUC {bs.cv_pr_auc:.3f}); best ensemble: **{be.model}** ({be.cv_pr_auc:.3f}). Ensembles {ens_phrase}.
+* Family winners — Bagging: {fam.loc['Bagging','model']} ({fam.loc['Bagging','cv_pr_auc']:.3f}); Boosting: {fam.loc['Boosting','model']} ({fam.loc['Boosting','cv_pr_auc']:.3f}); Voting: {fam.loc['Voting','model']} ({fam.loc['Voting','cv_pr_auc']:.3f}); Stacking: {fam.loc['Stacking','model']} ({fam.loc['Stacking','cv_pr_auc']:.3f}).
+* Strongest signals (permutation importance): {top_feats}. {('Early lapse is foreshadowed by **purchase timing and rhythm** — ' + ', '.join(FEAT_TXT.get(f, f) for f in imp_churn.feature.head(5)) + ' — rather than by who the member is; no demographic feature is in the top five.') if not set(imp_churn.feature.head(5)) & {'age', 'gender', 'emirate', 'family_size', 'has_kids'} else 'Both behavioural timing and some profile features matter.'}{' Caveat: *days since the first recorded purchase* is partly a property of the data window (high values mostly mark members whose history starts at the beginning of the file), so its importance is not purely behavioural — §10.5 measures what the model loses without it and §10.6 tests whether the relationship holds in another period.' if 'days_since_first' in set(imp_churn.feature.head(5)) else ''}
+* At the default 0.5 threshold the selected model is cautious (high precision, low recall); because a missed churner costs more than a false alarm, §13 lowers the threshold by cost."""))

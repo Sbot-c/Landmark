@@ -1,0 +1,359 @@
+%%MD
+# Landmark Retail Group — Customer Intelligence Engine
+### MAIB Machine Learning · Final Capstone · Analysis notebook
+
+**Team:** Sparsh Saraya · Shashaank Sharma · Sanjay Seemakurti · Shirley Waeni Kioko · Apurba Dash
+
+**Leadership brief:** *"Tell us who our customers are, who is about to leave, who is most valuable, which banner each customer belongs to, and what we should offer them — and give us a tool and a recommendation we can act on."*
+
+**What this notebook does.** It turns the three supplied files into a single, validated customer view and then answers the brief with EDA, PCA, clustering, two (plus one advanced) classification targets with SVMs and all four ensemble families, CLV regression, bias–variance diagnosis, Apriori, and the financial, Shukran and Viva analyses. Every number shown is computed in this run from the supplied CSVs; every artifact the dashboard (`app.py`) displays is written by this notebook to `artifacts/`.
+
+**What is in this submission.** This notebook (analysis, all outputs visible), `app.py` (Streamlit dashboard, modules A–N), `pipeline_diagram/` (pipeline diagram and dependency justification) and `README.md` (how to run everything). The business report and the presentation are submitted separately.
+
+**AI-assistance disclosure.** This notebook, the dashboard (`app.py`) and the supporting code were developed with the help of an AI assistant (Claude, by Anthropic), working from the team's written brief; the requirements that brief adds beyond the two specifications are labelled *TS (team scope)* in §0. Every result is computed by the code in this notebook from the supplied data. The team is responsible for the analysis choices and their interpretation, and for defending them at the viva.
+
+| Reading guide | |
+|---|---|
+| §0 | Document audit, discrepancies, requirement-traceability matrix |
+| §1–§3 | Environment, data audit & cleaning, unified customer view |
+| §4–§6 | Viva blind spot, EDA (E1–E10), Group financials & eight-banner analysis |
+| §7–§8 | PCA, clustering (Euclidean vs Manhattan, raw vs PCA, like-for-like silhouette), named segments; second view on shopping style (§8.2) |
+| §9 | Pipeline design and dependency logic |
+| §10–§13 | Classification laboratory: churn (early-warning design, data-window ablation, out-of-time test), Home Centre vs Homebox, Splash vs Max; threshold & cost; neural-network activations; calibration and bootstrap confidence intervals |
+| §14–§15 | CLV regression (historical, circularity audit, next-period with loss variants, BG/NBD × Gamma-Gamma benchmark, conformal 80% ranges) and bias–variance |
+| §16–§17 | Apriori cross-banner rules (activity/household-adjusted lift, customer-month check), bundles, epsilon-greedy offer sandbox (simulation), Key Ring identity proposal |
+| §18–§20 | Shukran loyalty intelligence, discount dependency, migration/upsell, the 12 customer-intelligence answers |
+| §21 | Artifact export, QA checks, traceability status and rubric verification |
+
+%%MD
+## §0 · Document audit (completed before any modelling)
+
+**Source hierarchy.** `Landmark_FINAL_Project.md` is the controlling specification. `Landmark_Customer_Intelligence_CaseStudy.md` is supplementary: every Case Study instruction that does not conflict is kept. The team's own scope (**TS**) adds requirements beyond both specifications — financial modelling, Shukran analysis, a full model laboratory, dashboard modules A–N, and the robustness checks R48–R57 — and they are traced below alongside the specification requirements.
+
+### 0.1 Discrepancies between the two specifications
+
+| # | Topic | Final Project (controls) | Case Study | Resolution in this build |
+|---|---|---|---|---|
+| D1 | Total marks | 100 | 50 | Final rubric used; work also mapped to the Case Study rubric (§21) |
+| D2 | Rubric arithmetic | Published criterion weights sum to **106**, not 100 | Sums correctly to 50 | Weights preserved exactly as published; inconsistency flagged for the instructor (computed below) |
+| D3 | Team size | Teams of 2–3, individual viva accountability | Individual | Not a build issue; every cell is commented so any member can defend it |
+| D4 | Duration | 3–4 weeks | 2–3 weeks | Not a build issue |
+| D5 | Classification targets | Both churn **and** banner routing (Core) | Core needs only one | Both built, plus Splash vs Max (advanced) |
+| D6 | PCA | Required (Part 1) | Not mentioned | Required and done |
+| D7 | SVM, ensembles, bias–variance | Explicitly required | Partly implied | All done |
+| D8 | Written deliverable | 1–2 page business report + presentation/viva | 1-page strategy memo | Separate deliverables; the 1-page memo content folds into the business report |
+| D9 | Clustering inputs | PCA components and/or engineered features | RFM + behavioural features | Both representations compared |
+| D10 | Confusion matrix & threshold | Threshold by business cost (advanced) | Confusion matrix + threshold explicitly required | Both done |
+| D11 | Discount dependency | One option for rubric item 10 | Core special analysis | Done (plus migration) |
+| D12 | Next-period CLV | Advanced | "Attempt only if confident" | Done with a temporal cutoff and a naive baseline |
+| D13 | Dashboard | 6 views | 6 sections | The dashboard's modules A–N (team scope) cover both |
+| D14 | Random Forest / Extra Trees | Bagging ensembles | — | The team scope lists them in the single-model line-up; they are run, but classified as **Bagging** in all single-vs-ensemble comparisons (they are ensembles by construction) |
+| D15 | "Epsilon method" / "Key Ring Approach" | Not in either spec | Not in either spec | Interpreted (epsilon-greedy offer sandbox = **simulation**; Key Ring = **proposed** identity architecture), never presented as validated models |
+
+%%CODE
+# Rubric arithmetic check (D2) — computed, not asserted
+FINAL_RUBRIC = {
+    "1 EDA, cleaning & unified customer view": 10, "2 PCA": 10, "3 Pipeline design & justification": 6,
+    "4 Segmentation": 10, "5 Classification incl. SVM (no leakage)": 10, "6 Ensemble methods": 10,
+    "7 Bias–variance analysis": 8, "8 Regression — CLV": 6, "9 Apriori": 6,
+    "10 Viva blind spot + second special analysis": 6, "11 Dashboard": 8, "12 Business report": 6,
+    "13 Presentation / viva": 10,
+}
+CASE_RUBRIC = {"EDA & unified view": 6, "Pipeline": 5, "Segmentation": 6, "Churn": 6, "Banner routing": 5,
+               "CLV": 5, "Apriori": 5, "Viva + discount dependency": 4, "Dashboard": 6, "Strategy memo": 2}
+print(f"Final Project rubric: stated total = 100, sum of published weights = {sum(FINAL_RUBRIC.values())}  ->  "
+      f"{'CONSISTENT' if sum(FINAL_RUBRIC.values()) == 100 else 'INCONSISTENT (flag to instructor; weights kept as published)'}")
+print(f"Case Study rubric:   stated total = 50,  sum of published weights = {sum(CASE_RUBRIC.values())}")
+
+%%MD
+### 0.2 Requirement-traceability matrix
+The matrix is defined here, **before** modelling, with each requirement's evidence artifact. Sources: **FP** = Final Project brief (`Landmark_FINAL_Project.md`, P = part), **CS** = Case Study (`Landmark_Customer_Intelligence_CaseStudy.md`), **TS** = team scope (requirements the team added beyond both specifications). Its *completion status is not typed by hand*: §21 re-evaluates every row automatically (does the evidence artifact exist and pass its check?) after the whole notebook has run.
+
+%%CODE
+import pandas as pd
+pd.set_option("display.max_colwidth", 120); pd.set_option("display.width", 220)
+REQS = [
+ # id, requirement, source, implementation, evidence (artifact in artifacts/ or notebook section)
+ ("R01","Read all five files; detect names with '(1)'","TS","find_csv() glob on stem / stem(1)","metrics/env_versions.json"),
+ ("R02","Audit & traceability before modelling","TS","§0 runs first; status re-checked in §21","metrics/data_audit.json"),
+ ("R03","Per-file audit: shape, dtypes, missing, duplicates, uniques, stats, skew, outliers, dates, ID formats","FP P0; CS 5.1; TS","audit_frame() + §2 tables","metrics/data_audit.json"),
+ ("R04","Outliers judged against business context; every transformation logged; raw data preserved","TS","IQR flags by banner, transformation log, MD5 of raw files","metrics/transformation_log.json"),
+ ("R05","Relationship checks: PK, FK, unique transaction IDs, 7 banners, separate Viva IDs, no join inflation, reconciliation","TS","§2 validation asserts","metrics/reconciliation.json"),
+ ("R06","Unified one-row-per-customer view: profile, RFM, avg ticket, discount rate, banners, categories, banner & category shares, cohorts, bands","FP P0; CS 5.2; TS","build_customer_view()","metrics/customer_master.csv"),
+ ("R07","Explicit observation (as-of) date — not 'today'","TS","OBS_DATE = latest record","metrics/reconciliation.json"),
+ ("R08","Feature dictionary + correlation / redundancy / low-variance / leakage screen","TS","§3 tables","metrics/feature_dictionary.csv"),
+ ("R09","Viva blind spot: attempted join, matched IDs, revenue & anonymous share, coverage, ≥2 bias mechanisms, alternative matching","FP P0; CS 5.3; TS","§4","metrics/viva_gap.json"),
+ ("R10","Stage-0 reflections (skew, data quality, why Viva can't be joined, downstream bias)","FP; CS","§2–§4 markdown","notebook"),
+ ("R11","EDA visuals E1–E10 with implications","TS","§5 figures","visualisations/eda_E10_viva_vs_shukran.png"),
+ ("R12","Group revenue: annual, quarterly, volumes, ticket, growth, partial-period flags, like-for-like","TS","period_coverage() + §6","metrics/fin_quarterly.csv"),
+ ("R13","Rank all eight banners (revenue, volume, ticket, share, reach; Viva reach labelled not comparable)","TS","banner_ranking()","metrics/banner_ranking_full.csv"),
+ ("R14","Profit unavailable; editable margin scenarios; ranking change under assumptions","TS","contribution_scenario()","metrics/profit_scenarios.csv"),
+ ("R15","Sections titled exactly 'Home Centre vs Homebox' and 'Splash vs Max'; separate overviews for Babyshop, Centrepoint, Funcity, Viva","TS","§6.4–§6.6","metrics/pair_comparison.csv"),
+ ("R16","PCA: standardise in a pipeline, scree, cumulative & individual variance, ~90% rule, PC1–PC2 plot, loadings interpreted, cost/benefit","FP P1; TS","§7","metrics/pca_loadings.csv"),
+ ("R17","Clustering raw vs PCA compared","FP P1–P2; TS","§8 comparison","metrics/cluster_grid.csv"),
+ ("R18","K-means (Euclidean) vs Manhattan algorithm; silhouette compared like-for-like (same space, both metrics; own-metric score also reported)","TS","KMeans vs KMedoids(manhattan) + Agglomerative(manhattan)","metrics/cluster_grid.csv"),
+ ("R19","K chosen by elbow + silhouette (+ min share, stability)","FP P2; CS 6.1; TS","§8 selection","metrics/cluster_choice.json"),
+ ("R20","Segment profiles & evidence-based business names","FP; CS; TS","§8 profiles","metrics/segment_profiles.csv"),
+ ("R21","Churn target (observed status) with leakage audit and early-warning temporal design","FP 3B; TS","§10","metrics/leakage_audit_churn.csv"),
+ ("R22","Home Centre vs Homebox target; tie rule; leakage audit; permitted predictors","FP 3A; CS 6.2; TS","§11","metrics/leakage_audit_home.csv"),
+ ("R23","Splash vs Max target (advanced)","FP; CS; TS","§12","metrics/leaderboard_fashion.csv"),
+ ("R24","Nine single models (LR, DT, KNN, SVM-linear, SVM-RBF, GNB, RF, ET, MLP) with scaling in pipelines","TS; FP","model_specs()","metrics/leaderboard_churn.csv"),
+ ("R25","Bagging, boosting, voting (soft vs hard), stacking; winner per family","FP; TS","model_specs() + ensembles","metrics/family_winners_churn.csv"),
+ ("R26","Common protocol: stratified split, CV on train, tuning, untouched test, seeds, timings","TS","run_lab()","metrics/leaderboard_home.csv"),
+ ("R27","Full metric table + separate numeric rankings (accuracy, precision, recall, F1, discrimination)","FP; TS","rank columns","metrics/leaderboard_churn.csv"),
+ ("R28","Why the winner wins; materiality; simpler-model check; permutation importance","TS","1-SE rule + permutation importance","metrics/perm_importance_churn.csv"),
+ ("R29","PCA inside supervised pipelines (with vs without)","FP P1; TS","§13.5","metrics/pca_vs_raw_classification.csv"),
+ ("R30","Churn: baseline, 0.5 threshold, sweep, PR & threshold curves, validation-tuned threshold, cost framework, value tiers, operational threshold","CS 6.3; TS","§13","metrics/threshold_choice.json"),
+ ("R31","Confusion matrices (counts & normalised) with TP/TN/FP/FN business meaning","CS 6.3; TS","§13","visualisations/cm_churn.png"),
+ ("R32","MLP activation comparison (identity, logistic, tanh, relu) incl. convergence & cost","TS","§13.6","metrics/mlp_activations.csv"),
+ ("R33","CLV historical regression: Linear, Ridge, Lasso, ElasticNet + nonlinear; MAE/RMSE/R²; residuals","FP P4; CS 6.4; TS","§14","metrics/regression_historical.csv"),
+ ("R34","CLV circularity audit + next-period model with cutoff and naive baseline","TS; FP adv","§14","metrics/regression_next_period.csv"),
+ ("R35","Bias–variance: train/CV/test, learning & validation curves, diagnostics table, bagging/boosting link","FP P5; TS","§15","metrics/diagnostics.csv"),
+ ("R36","Apriori on customer-level banner baskets: threshold sweep, support/confidence/lift, pruning, per segment, offers","FP P6; CS 6.5; TS","§16","metrics/rules_all.csv"),
+ ("R37","Epsilon method — offer sandbox labelled SIMULATION","TS","epsilon_greedy_sim()","metrics/epsilon_sim_summary.csv"),
+ ("R38","Key Ring identity architecture — PROPOSED, no links manufactured","TS","§17","metrics/key_ring_proposal.json"),
+ ("R39","Shukran: coverage, cohorts, churn by driver, discount-linked spend, savings unavailable, helped/harmed","TS","§18","metrics/shukran_summary.json"),
+ ("R40","Discount dependency: discount-only vs full-price loyalists; margin-eroding segments","CS §8.2; FP rubric 10","§18.3","metrics/discount_dependency.csv"),
+ ("R41","Segment migration / upsell candidates (Homebox→Home Centre, Max→Splash), labelled candidates","FP adv; CS §8.3; TS","§19","metrics/migration_candidates.csv"),
+ ("R42","Answers to the 12 customer-intelligence questions","TS","§20","metrics/cust_intel_answers.json"),
+ ("R43","Fine-tuning throughout (K, PCs, C/kernel, thresholds, regularisation, support/confidence)","FP; CS §7","grids logged","metrics/tuning_log.json"),
+ ("R44","Bundles per segment (advanced)","FP; CS §8.4","§16.4","metrics/bundle_offers.csv"),
+ ("R45","Pipeline diagram + 2–3 sentence dependency justification","FP; CS §4; TS","§9 + pipeline_diagram/ (diagram, justification)","root:pipeline_diagram/pipeline_justification.md"),
+ ("R46","Dashboard modules A–N reading these artifacts","FP P7; CS §9; TS","app.py (tested by tests/test_dashboard.py)","root:app.py"),
+ ("R47","Business report / memo / presentation","FP P8; CS; TS","Separate deliverables (not part of this notebook)","Separate"),
+ # Robustness checks added by the team (TS; not in the original specifications — they strengthen the evidence for rubric items 4–9)
+ ("R48","Pinned, tested library versions (lock file) and an older-stack compatibility run","TS (robustness)","requirements-lock.txt + tests/compat_report.md","root:requirements-lock.txt"),
+ ("R49","Data-window feature: evidence, paired ablation, extrapolation check, scoring guard for forward scores","TS (robustness)","§10.5, §13.4, §14.3","metrics/window_feature_ablation.json"),
+ ("R50","Out-of-time churn validation (train on earlier periods, test on the supplied flag)","TS (robustness)","§10.6","metrics/oot_summary.json"),
+ ("R51","Probability calibration of the selected classifiers (reliability, Brier, ECE, risk-band check)","TS (robustness)","§13.8","metrics/calibration_summary.csv"),
+ ("R52","Bootstrap confidence intervals for every test result and paired model comparisons","TS (robustness)","§13.9, §14.4","metrics/test_ci.csv"),
+ ("R53","Forward CLV: alternative losses, two-part model, BG/NBD × Gamma-Gamma benchmark, ranking metrics","TS (robustness)","§14.3–§14.4","metrics/clv_benchmark.csv"),
+ ("R54","Forward CLV prediction intervals (conformalised) with test coverage","TS (robustness)","§14.5","metrics/clv_intervals.json"),
+ ("R55","Apriori robustness: activity- and household-adjusted lift (CMH), customer-month baskets","TS (robustness)","§16.2","metrics/rules_month_robustness.csv"),
+ ("R56","Second segmentation view on shopping style only, compared with the banner-mix segments","TS (robustness)","§8.2","metrics/style_choice.json"),
+ ("R57","Unit tests for the shared module and a one-command verification script","TS (robustness)","tests/test_core.py, tests/run_all_checks.py","root:tests/test_core.py"),
+]
+traceability = pd.DataFrame(REQS, columns=["id", "requirement", "source", "implementation", "evidence"])
+traceability["status"] = "Pending (evaluated in §21)"
+traceability
+
+%%MD
+## §1 · Environment, reproducibility and plotting conventions
+Seeds are fixed (`SEED = 42`); library versions are recorded to `artifacts/metrics/env_versions.json`. Optional libraries (XGBoost, kmedoids) are detected and the notebook degrades gracefully if they are missing. Charts follow one convention: AED units on money axes, colour follows the banner (never its rank), legends whenever two or more series are shown, and no dual axes.
+
+%%CODE
+import os, sys, time, json, warnings, importlib, platform, hashlib
+from pathlib import Path
+ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+sys.path.insert(0, str(ROOT))
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
+import seaborn as sns
+from cycler import cycler
+from IPython.display import display, Markdown
+import lci_core as L
+from lci_core import SEED
+
+FAST = os.environ.get("LCI_FAST") == "1"     # developer quick-check mode (smaller grids); the submitted run uses FAST=False
+np.random.seed(SEED)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*probability.*deprecated.*")
+
+plt.rcParams.update({
+    "figure.dpi": 105, "savefig.dpi": 150, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": "#E6E2D8", "grid.linewidth": 0.6, "axes.edgecolor": "#C3C2B7",
+    "axes.titleweight": "bold", "axes.titlesize": 11.5, "axes.labelsize": 10, "xtick.labelsize": 9,
+    "ytick.labelsize": 9, "legend.fontsize": 9, "legend.frameon": False, "font.family": "DejaVu Sans",
+    "axes.prop_cycle": cycler(color=L.SERIES), "axes.axisbelow": True,
+})
+BC = L.BANNER_COLORS
+AED = mtick.FuncFormatter(lambda x, _: f"{x/1e6:.1f}M" if abs(x) >= 1e6 else (f"{x/1e3:.0f}K" if abs(x) >= 1e3 else f"{x:.0f}"))
+
+def save(fig, name):
+    """Save every figure to artifacts/visualisations so the dashboard and report reuse the identical image."""
+    fig.tight_layout()
+    fig.savefig(L.VIS / f"{name}.png", bbox_inches="tight", facecolor="white")
+    plt.show(); plt.close(fig)
+
+versions = {"python": platform.python_version(), "platform": platform.platform(), "FAST_mode": FAST}
+from importlib import metadata
+for m in ["pandas", "numpy", "sklearn", "scipy", "mlxtend", "xgboost", "kmedoids", "matplotlib", "seaborn", "streamlit", "plotly", "joblib"]:
+    try:
+        mod = importlib.import_module(m)
+    except Exception:
+        versions[m] = "NOT INSTALLED"; continue
+    v = getattr(mod, "__version__", None)
+    if v is None:                       # some packages (e.g. kmedoids) expose no __version__ → read the installed distribution
+        try:
+            v = metadata.version({"sklearn": "scikit-learn"}.get(m, m))
+        except Exception:
+            v = "installed (version not exposed)"
+    versions[m] = v
+try:
+    from xgboost import XGBClassifier; HAS_XGB = True
+except Exception:
+    HAS_XGB = False
+try:
+    import kmedoids; HAS_KMEDOIDS = True
+except Exception:
+    HAS_KMEDOIDS = False
+versions["has_xgboost"], versions["has_kmedoids"] = HAS_XGB, HAS_KMEDOIDS
+L.save_json(versions, L.METRICS / "env_versions.json")
+pd.Series(versions, name="version").to_frame()
+
+%%MD
+## §2 · Stage 0 — Data audit, relationship validation and cleaning
+
+### 2.1 Load the raw files exactly as supplied
+`load_raw()` resolves the actual file names (it accepts `customers.csv` **or** `customers(1).csv`), validates the schema, and fingerprints each raw file (MD5) so §21 can prove the raw data were never modified.
+
+%%CODE
+cust, tx, viva, PATHS = L.load_raw()
+RAW_MD5 = {k: L.md5(p) for k, p in PATHS.items()}
+pd.DataFrame({"resolved_file": {k: p.name for k, p in PATHS.items()}, "md5": RAW_MD5,
+              "rows": {"customers": len(cust), "transactions": len(tx), "viva_transactions": len(viva)},
+              "columns": {"customers": cust.shape[1], "transactions": tx.shape[1], "viva_transactions": viva.shape[1]}})
+
+%%MD
+### 2.2 Data dictionary (business definitions)
+
+%%CODE
+DICTIONARY = pd.DataFrame([
+ ("customers","customer_id","Shukran ID (SHK…); primary key; links to transactions"),
+ ("customers","age","Age in years"), ("customers","gender","F / M"), ("customers","emirate","Emirate of residence"),
+ ("customers","family_size","People in household"), ("customers","has_kids","1 = household has children"),
+ ("customers","tenure_months","Months as a Shukran member (measured at extract)"),
+ ("customers","signup_date","Date joined Shukran"), ("customers","churned","1 = lapsed, 0 = active (observed status; churn label)"),
+ ("transactions","transaction_id","Unique purchase ID (T…)"), ("transactions","customer_id","Shukran ID of the buyer (FK)"),
+ ("transactions","date","Purchase date"), ("transactions","banner","One of the 7 Shukran banners"),
+ ("transactions","category","Home / Fashion / Baby / Department / Entertainment"),
+ ("transactions","amount","Amount spent, AED (recorded revenue)"), ("transactions","discount_used","1 = discount/promotion used (binary flag; no discount amount)"),
+ ("viva_transactions","transaction_id","Unique Viva purchase ID (V…)"),
+ ("viva_transactions","viva_member_id","Viva Rewards ID (VR…) — Viva's own programme; blank = anonymous walk-in; NOT a Shukran ID"),
+ ("viva_transactions","date","Purchase date"), ("viva_transactions","category","Grocery / Household / Fresh / Beverages"),
+ ("viva_transactions","amount","Amount spent, AED"),
+], columns=["file", "column", "business definition"])
+DICTIONARY["dtype"] = [str({"customers": cust, "transactions": tx, "viva_transactions": viva}[f][c].dtype) for f, c in zip(DICTIONARY.file, DICTIONARY.column)]
+DICTIONARY
+
+%%MD
+### 2.3 Per-file audit — missing values, duplicates, keys, uniques, statistics, skew, dates
+
+%%CODE
+AUDIT = [L.audit_frame(cust, "customers", "customer_id"), L.audit_frame(tx, "transactions", "transaction_id"),
+         L.audit_frame(viva, "viva_transactions", "transaction_id")]
+L.save_json(AUDIT, L.METRICS / "data_audit.json")
+overview = pd.DataFrame([{ "file": a["file"], "rows": a["rows"], "columns": a["columns"],
+    "cells_missing": sum(a["missing"].values()), "full_row_duplicates": a["full_row_duplicates"],
+    "key": a["key"], "key_unique": a["key_unique"], "date_range": "; ".join(f"{k}: {v[0]} → {v[1]}" for k, v in a["date_range"].items()),
+    "invalid_dates": sum(a["invalid_dates"].values())} for a in AUDIT])
+display(overview)
+miss = pd.concat({a["file"]: pd.DataFrame({"missing": a["missing"], "missing_%": a["missing_pct"]}) for a in AUDIT})
+display(miss[miss["missing"] > 0])
+
+%%CODE
+# Numeric descriptive statistics with quartiles and skewness
+def describe_with_skew(df):
+    d = df.select_dtypes("number").describe().T
+    d["skew"] = df.select_dtypes("number").skew()
+    return d.round(3)
+for name, df in [("customers", cust), ("transactions", tx), ("viva_transactions", viva)]:
+    display(Markdown(f"**{name}**")); display(describe_with_skew(df))
+
+%%CODE
+# Category distributions and ID formats
+for name, df, cols in [("customers", cust, ["gender", "emirate", "has_kids"]),
+                       ("transactions", tx, ["banner", "category", "discount_used"]),
+                       ("viva_transactions", viva, ["category"])]:
+    for c in cols:
+        vc = df[c].value_counts(dropna=False)
+        display(pd.DataFrame({"count": vc, "share_%": (vc / len(df) * 100).round(1)}).T.rename_axis(f"{name}.{c}"))
+
+ID_PATTERNS = {("customers", "customer_id"): r"^SHK\d{6}$", ("transactions", "transaction_id"): r"^T\d{6}$",
+               ("transactions", "customer_id"): r"^SHK\d{6}$", ("viva_transactions", "transaction_id"): r"^V\d{6}$",
+               ("viva_transactions", "viva_member_id"): r"^VR\d{6}$"}
+frames = {"customers": cust, "transactions": tx, "viva_transactions": viva}
+id_check = pd.DataFrame([{"file": f, "column": c, "pattern": p,
+                          "non_blank": int(frames[f][c].notna().sum()),
+                          "matching_pattern": int(frames[f][c].dropna().astype(str).str.match(p).sum())}
+                         for (f, c), p in ID_PATTERNS.items()])
+id_check["all_valid"] = id_check["non_blank"] == id_check["matching_pattern"]
+id_check
+
+%%MD
+### 2.4 Transaction amounts — zero/negative values, extremes and outliers in business context
+A statistical outlier is not automatically an error. The IQR rule is applied **within each banner**, because a AED 1,500 sofa is normal at Home Centre but would be extreme at Max.
+
+%%CODE
+amt_checks = pd.DataFrame({
+    "file": ["transactions", "viva_transactions"],
+    "zero_or_negative": [int((tx.amount <= 0).sum()), int((viva.amount <= 0).sum())],
+    "min_aed": [tx.amount.min(), viva.amount.min()], "max_aed": [tx.amount.max(), viva.amount.max()],
+    "skew": [round(tx.amount.skew(), 2), round(viva.amount.skew(), 2)],
+    "global_IQR_outliers": [int(L.iqr_outliers(tx.amount).sum()), int(L.iqr_outliers(viva.amount).sum())],
+})
+display(amt_checks)
+by_banner = tx.groupby("banner")["amount"].agg(["count", "min", "median", "max"])
+by_banner["within_banner_IQR_outliers"] = tx.groupby("banner")["amount"].apply(lambda s: int(L.iqr_outliers(s).sum()))
+by_banner["outlier_%"] = (by_banner["within_banner_IQR_outliers"] / by_banner["count"] * 100).round(2)
+global_out = tx[L.iqr_outliers(tx.amount)]
+by_banner["share_of_global_outliers_%"] = (global_out.banner.value_counts() / len(global_out) * 100).reindex(by_banner.index).fillna(0).round(1)
+by_banner.round(2)
+
+%%MD
+**Decision.** No zero or negative amounts exist. Global IQR "outliers" are almost entirely Home Centre purchases (premium furniture), i.e. legitimate high-value transactions rather than errors, and within-banner outlier rates are small. **All amounts are retained.** Skew is handled where it matters analytically: log transforms (`log_monetary`, `log_avg_ticket`, …) are created as *additional* features for distance-based and linear models, while original AED values are kept for every business figure.
+
+### 2.5 Relationship validation and data-quality findings
+
+%%CODE
+OBS_DATE = tx["date"].max()           # as-of date for every customer-level feature (latest recorded Shukran transaction)
+checks = {
+    "customer_id is a unique primary key": bool(cust.customer_id.is_unique),
+    "every transaction has a valid Shukran customer (no orphans)": bool(tx.customer_id.isin(cust.customer_id).all()),
+    "every customer has at least one transaction": bool(cust.customer_id.isin(tx.customer_id).all()),
+    "transaction_id unique in transactions": bool(tx.transaction_id.is_unique),
+    "transaction_id unique in viva_transactions": bool(viva.transaction_id.is_unique),
+    "core file contains exactly the 7 Shukran banners": set(tx.banner) == set(L.CORE_BANNERS),
+    "each banner maps to exactly one category": bool((tx.groupby("banner").category.nunique() == 1).all()),
+    "Viva IDs use a separate scheme (VR…) with zero overlap with SHK… IDs": int(viva.viva_member_id.dropna().isin(cust.customer_id).sum()) == 0,
+}
+display(pd.Series(checks, name="passed").to_frame())
+assert all(checks.values()), "A relationship check failed — stop and investigate"
+
+pre = tx.merge(cust[["customer_id", "signup_date"]], on="customer_id")
+pre_signup = pre[pre["date"] < pre["signup_date"]]
+tenure_implied = ((OBS_DATE - cust.signup_date).dt.days / 30.44)
+quality = pd.DataFrame([
+    ("Transactions dated before the member's signup_date", len(pre_signup), f"{len(pre_signup)/len(tx)*100:.1f}% of rows; {pre_signup.customer_id.nunique()} customers; median {int((pre_signup.signup_date-pre_signup.date).dt.days.median())} days early",
+     "Retained (revenue is real; may be retro-claimed receipts or a signup-date entry issue). Flagged; tenure features use signup_date as supplied."),
+    ("tenure_months vs months since signup_date", int(((tenure_implied.round() - cust.tenure_months).abs() > 1).sum()), "rows differing by more than 1 month",
+     "Consistent: tenure_months is a deterministic function of signup_date (redundant — use one, not both, in the same model)."),
+    ("Viva anonymous (unscanned) baskets", int(viva.viva_member_id.isna().sum()), f"{viva.viva_member_id.isna().mean()*100:.1f}% of Viva rows",
+     "Expected by design (walk-ins). Retained for Group revenue; unusable for any customer-level analysis."),
+    ("Transaction history starts after most signups", int((cust.signup_date < tx.date.min()).sum()), f"customers who joined before {tx.date.min().date()} (first transaction in file)",
+     "Behaviour before the first recorded date is unobserved; cohort analysis is about signup timing, not lifetime spend."),
+    ("Partial final quarter", int((tx.date >= "2026-10-01").sum()), "Shukran rows in 2026-Q4 (data end 2026-10-01 = 1 day of the quarter)",
+     "Flagged everywhere; never compared with complete quarters."),
+], columns=["finding", "count", "detail", "decision"])
+quality.to_csv(L.METRICS / "quality_findings.csv", index=False)
+quality
+
+%%CODE
+# Transformation log: every change between raw and analytical data is recorded here (raw frames are never overwritten)
+TRANSFORMATION_LOG = [
+    {"step": "Type parsing", "detail": "date / signup_date parsed as datetime; IDs and labels as string", "rows_affected": 0},
+    {"step": "Exact duplicate removal", "detail": "none found (transactions, viva, customers)", "rows_affected": int(tx.duplicated().sum() + viva.duplicated().sum() + cust.duplicated().sum())},
+    {"step": "Missing values", "detail": "only viva_member_id is blank (anonymous); retained as anonymous", "rows_affected": int(viva.viva_member_id.isna().sum())},
+    {"step": "Outliers", "detail": "retained; log-transformed copies added for modelling only", "rows_affected": 0},
+    {"step": "Pre-signup transactions", "detail": "retained and flagged (pre_signup=1) in the analytical copy", "rows_affected": int(len(pre_signup))},
+    {"step": "Viva", "detail": "kept in a separate branch; never joined to Shukran customers", "rows_affected": 0},
+]
+tx_a = tx.copy()                                             # analytical copy (raw `tx` stays untouched)
+tx_a["pre_signup"] = tx_a.transaction_id.isin(pre_signup.transaction_id).astype(int)
+L.save_json(TRANSFORMATION_LOG, L.METRICS / "transformation_log.json")
+pd.DataFrame(TRANSFORMATION_LOG)
+
+%%MD
+**Reflection — what cleaning revealed (Stage 0, Q1).** The three files are structurally clean: no missing values outside the expected anonymous Viva baskets, no duplicates, no orphan transactions, no invalid IDs or dates, and every banner maps to exactly one category. The material issues are *semantic*, not structural: (i) 6.3% of Shukran transactions predate the member's recorded signup date — retained and flagged, because removing real revenue would be worse than a known timing inconsistency; (ii) `tenure_months` duplicates information already in `signup_date`; (iii) the first and last quarters are partial; and (iv) a third of Viva baskets cannot be attributed to anyone. Nothing was deleted, so recorded revenue reconciles exactly with the source files (§3).

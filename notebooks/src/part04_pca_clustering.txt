@@ -1,0 +1,470 @@
+%%MD
+## §7 · PCA — dimensionality reduction and interpretation
+
+**Feature matrix.** Fifteen behavioural features from the unified view: recency, log frequency, log monetary, log average ticket, discount rate, number of banners, banner concentration (HHI), 90-day trend, and the seven banner spend shares. Identifiers, the churn label, categorical columns and demographics are excluded (segments are meant to describe *behaviour*; demographics are used afterwards only to profile them). Category shares are excluded because they are exact sums of banner shares (§3).
+
+**Leakage note.** This unsupervised PCA is fitted on all customers because it is only used to *describe* the base. Whenever PCA feeds a supervised model (§13.3) it sits **inside** the scikit-learn pipeline, so it is re-fitted on each training fold only.
+
+%%CODE
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+SEG_FEATURES = ["recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners", "banner_hhi", "trend90"] + \
+               [f"bshare_{b}" for b in L.CORE_BANNERS]
+X_seg = cv[SEG_FEATURES].astype(float)
+assert X_seg.notna().all().all()
+pca_full = Pipeline([("scale", StandardScaler()), ("pca", PCA(random_state=SEED))]).fit(X_seg)
+evr = pca_full["pca"].explained_variance_ratio_
+eig = pca_full["pca"].explained_variance_
+pca_table = pd.DataFrame({"PC": [f"PC{i+1}" for i in range(len(evr))], "eigenvalue": eig, "explained_var_pct": evr * 100,
+                          "cumulative_pct": np.cumsum(evr) * 100})
+n80, n90, n95 = [int(np.argmax(np.cumsum(evr) >= t) + 1) for t in (0.80, 0.90, 0.95)]
+n_kaiser = int((eig > 1).sum())
+print(f"Components for >=80%: {n80} | >=90%: {n90} | >=95%: {n95} | Kaiser (eigenvalue > 1): {n_kaiser}  (of {len(evr)} features)")
+pca_table.to_csv(L.METRICS / "pca_explained.csv", index=False)
+pca_table.round(3)
+
+%%CODE
+fig, ax = plt.subplots(1, 2, figsize=(13, 4))
+ax[0].bar(pca_table.PC, pca_table.explained_var_pct, color=L.SERIES[0]); ax[0].plot(pca_table.PC, pca_table.explained_var_pct, color=L.UI["navy"], marker="o", lw=1.2)
+ax[0].axhline(100 / len(evr), color=L.UI["terra"], lw=1.2, label=f"average feature ({100/len(evr):.1f}%) ≈ Kaiser line")
+ax[0].set(title="Scree plot — individual explained variance", xlabel="Principal component", ylabel="% of variance"); ax[0].legend(); ax[0].tick_params(axis="x", rotation=45)
+ax[1].plot(pca_table.PC, pca_table.cumulative_pct, marker="o", color=L.SERIES[0], lw=2)
+for thr, n, c in [(80, n80, L.UI["muted"]), (90, n90, L.UI["terra"]), (95, n95, L.UI["muted"])]:
+    ax[1].axhline(thr, color=c, lw=1); ax[1].text(len(evr) - 1, thr + 0.8, f"{thr}% → {n} PCs", ha="right", fontsize=8.5)
+ax[1].set(title="Cumulative explained variance", xlabel="Principal component", ylabel="Cumulative % of variance", ylim=(0, 102)); ax[1].tick_params(axis="x", rotation=45)
+save(fig, "pca_scree_cumulative")
+
+%%CODE
+# Loadings and plain-language interpretation of the leading components
+k_show = max(n90, 5)
+loadings = pd.DataFrame(pca_full["pca"].components_[:k_show].T, index=SEG_FEATURES, columns=[f"PC{i+1}" for i in range(k_show)])
+loadings.to_csv(L.METRICS / "pca_loadings.csv")
+fig, ax = plt.subplots(figsize=(10, 6.5))
+sns.heatmap(loadings.iloc[:, :6], annot=True, fmt=".2f", cmap=sns.diverging_palette(250, 15, s=70, l=50, as_cmap=True), center=0,
+            vmin=-0.7, vmax=0.7, linewidths=0.4, cbar_kws={"label": "loading"}, ax=ax, annot_kws={"size": 8})
+ax.set_title("PCA loadings — PC1 to PC6 (standardised features)")
+save(fig, "pca_loadings_heatmap")
+for pc in loadings.columns[:5]:
+    s = loadings[pc].sort_values()
+    print(f"{pc} ({evr[int(pc[2:])-1]*100:.1f}%):  +  " + ", ".join(f"{i} ({v:+.2f})" for i, v in s[::-1].head(3).items())
+          + "   |   −  " + ", ".join(f"{i} ({v:+.2f})" for i, v in s.head(3).items()))
+
+%%CODE
+Z_all = pca_full.transform(X_seg)
+cv["PC1"], cv["PC2"] = Z_all[:, 0], Z_all[:, 1]
+fig, ax = plt.subplots(1, 2, figsize=(14, 5.2))
+for lab, col, mk, name in [(0, L.SERIES[0], "o", "Active (0)"), (1, L.STATUS["critical"], "^", "Churned (1)")]:
+    m = cv.churned == lab
+    ax[0].scatter(cv.loc[m, "PC1"], cv.loc[m, "PC2"], s=9, alpha=0.55, color=col, marker=mk, label=name, edgecolor="none")
+ax[0].set(title="Customers in PC1–PC2 space, by churn status", xlabel=f"PC1 ({evr[0]*100:.1f}% of variance)", ylabel=f"PC2 ({evr[1]*100:.1f}%)"); ax[0].legend(markerscale=2)
+hb = cv["bshare_Home Centre"] > 0
+for lab, col, mk, name in [(True, BC["Home Centre"], "o", "Home Centre shopper"), (False, BC["Homebox"], "s", "Homebox / no premium home")]:
+    m = hb == lab
+    ax[1].scatter(cv.loc[m, "PC1"], cv.loc[m, "PC2"], s=9, alpha=0.5, color=col, marker=mk, label=name, edgecolor="none")
+for f_ in loadings.PC1.abs().add(loadings.PC2.abs()).sort_values(ascending=False).head(5).index:   # biplot arrows for the 5 strongest loadings
+    ax[1].arrow(0, 0, loadings.loc[f_, "PC1"] * 4, loadings.loc[f_, "PC2"] * 4, color=L.UI["navy"], width=0.01, head_width=0.12)
+    ax[1].annotate(f_.replace("bshare_", "share "), (loadings.loc[f_, "PC1"] * 4.5, loadings.loc[f_, "PC2"] * 4.5), fontsize=8, color=L.UI["navy"],
+                   ha="center", bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none", alpha=0.85))
+ax[1].set(title="Same projection by home tier, with feature loadings (biplot)", xlabel="PC1", ylabel="PC2"); ax[1].legend(markerscale=2, loc="lower right")
+save(fig, "pca_2d_projection")
+
+%%CODE
+def describe_pc(pc):
+    s_ = loadings[pc].sort_values()
+    pos = ", ".join(f"{i.replace('bshare_', 'share ')} ({v:+.2f})" for i, v in s_[::-1].head(3).items())
+    neg = ", ".join(f"{i.replace('bshare_', 'share ')} ({v:+.2f})" for i, v in s_.head(3).items())
+    return f"**{pc}** ({evr[int(pc[2:]) - 1] * 100:.1f}% of variance): high scores = {pos}; low scores = {neg}"
+display(Markdown("**Reflection — what PCA cost and bought.**\n\n" + "\n".join(f"* {describe_pc(pc)}" for pc in ["PC1", "PC2", "PC3"]) +
+    f"\n\n* **{n90} of {len(evr)} components** are needed for ≥ 90% of the variance (Kaiser keeps {n_kaiser}). Variance is spread over many components because the 15 features are only moderately correlated — PCA compresses the space but cannot reduce it to two or three factors without losing information."
+    "\n* *Cost:* each component blends all fifteen features, so a manager cannot read 'PC3 = 1.2' the way they read 'spent AED 4,000'; profiles are therefore always reported on the original features. "
+    "*Potential benefit:* decorrelated, equally scaled axes for distance-based clustering (the seven compositional banner shares no longer dominate), and a 2-D map; §8 tests whether clustering on the PCs actually separates members better than clustering on the raw features. "
+    "The PC1–PC2 view shows overlapping clouds rather than separated islands: segments are useful partitions of a continuum, not natural species."))
+
+%%MD
+**Retained components.** The number needed for ≥90% variance (`n90`) is retained for clustering. The Kaiser rule keeps fewer; it is reported but not used, because it discards about a fifth of the variance in a feature set that is already curated.
+
+## §8 · Customer segmentation — Euclidean vs Manhattan, raw vs PCA
+
+**Design.** Two representations × three algorithms × K = 2…10:
+* **Representations:** (a) the 15 standardised features ("raw"); (b) the first `n90` principal components ("PCA").
+* **Algorithms:** K-means (Euclidean — it minimises squared Euclidean distance; it cannot use Manhattan distance), **K-medoids with Manhattan (L1) distance** (FasterPAM, `kmedoids` package), and agglomerative clustering with **average linkage on Manhattan distance** (a hierarchical check; Ward linkage only supports Euclidean).
+* **Scores:** inertia (elbow) for K-means, the K-medoids L1 objective, the smallest cluster's share (a segment under 5% of members is not actionable) and the silhouette, computed two ways:
+  * **own-metric silhouette** — in the space and with the distance the algorithm optimises (a diagnostic only);
+  * **common-basis silhouette** — *every* partition scored in the **same space** (the 15 standardised raw features) under **both** Euclidean and Manhattan distance, then averaged. Only this version is comparable across algorithms and representations: a Manhattan silhouette and a Euclidean silhouette sit on different scales, and a silhouette measured in 9-PC space is measured on different distances from one in 15-feature space.
+
+%%CODE
+from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.metrics import silhouette_score, silhouette_samples, adjusted_rand_score, davies_bouldin_score
+X_raw = StandardScaler().fit_transform(X_seg)
+Z_ret = Pipeline([("scale", StandardScaler()), ("pca", PCA(n_components=n90, random_state=SEED))]).fit(X_seg)
+X_pca = Z_ret.transform(X_seg)
+REPS = {"raw (15 std. features)": X_raw, f"PCA ({n90} PCs)": X_pca}
+K_RANGE = range(2, 11)
+rows = []
+def common_silhouette(labels):
+    """Score any partition in the SAME space (15 standardised raw features) under both metrics → comparable across algorithms/representations."""
+    e, m = silhouette_score(X_raw, labels, metric="euclidean"), silhouette_score(X_raw, labels, metric="manhattan")
+    return {"sil_common_euclid": e, "sil_common_manhattan": m, "sil_common": (e + m) / 2}
+
+for rep, X in REPS.items():
+    for k in K_RANGE:
+        km = KMeans(n_clusters=k, n_init=20, random_state=SEED).fit(X)
+        rows.append({"representation": rep, "algorithm": "K-means (Euclidean)", "k": k, "objective": km.inertia_,
+                     "silhouette": silhouette_score(X, km.labels_, metric="euclidean"), **common_silhouette(km.labels_),
+                     "davies_bouldin": davies_bouldin_score(X, km.labels_),
+                     "min_cluster_share_pct": np.bincount(km.labels_).min() / len(X) * 100})
+        if HAS_KMEDOIDS:
+            md = kmedoids.KMedoids(n_clusters=k, metric="manhattan", method="fasterpam", random_state=SEED).fit(X)
+            rows.append({"representation": rep, "algorithm": "K-medoids (Manhattan)", "k": k, "objective": md.inertia_,
+                         "silhouette": silhouette_score(X, md.labels_, metric="manhattan"), **common_silhouette(md.labels_), "davies_bouldin": np.nan,
+                         "min_cluster_share_pct": np.bincount(np.asarray(md.labels_, dtype=int)).min() / len(X) * 100})
+        ag = AgglomerativeClustering(n_clusters=k, metric="manhattan", linkage="average").fit(X)
+        rows.append({"representation": rep, "algorithm": "Agglomerative avg-link (Manhattan)", "k": k, "objective": np.nan,
+                     "silhouette": silhouette_score(X, ag.labels_, metric="manhattan"), **common_silhouette(ag.labels_), "davies_bouldin": np.nan,
+                     "min_cluster_share_pct": np.bincount(ag.labels_).min() / len(X) * 100})
+cluster_grid = pd.DataFrame(rows)
+cluster_grid.to_csv(L.METRICS / "cluster_grid.csv", index=False)
+display(Markdown("**Common-basis silhouette** (every partition scored on the 15 standardised raw features; mean of Euclidean and Manhattan)"))
+cluster_grid.pivot_table(index="k", columns=["representation", "algorithm"], values="sil_common").round(3)
+
+%%CODE
+fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+for i, rep in enumerate(REPS):
+    g = cluster_grid[(cluster_grid.representation == rep) & (cluster_grid.algorithm == "K-means (Euclidean)")]
+    ax[0].plot(g.k, g.objective, marker="o", lw=2, color=L.SERIES[i], label=rep)
+ax[0].set(title="Elbow — K-means inertia", xlabel="K (number of segments)", ylabel="Within-cluster sum of squares"); ax[0].legend()
+styles = {"K-means (Euclidean)": "-", "K-medoids (Manhattan)": "--", "Agglomerative avg-link (Manhattan)": ":"}
+for i, rep in enumerate(REPS):
+    for alg, ls in styles.items():
+        g = cluster_grid[(cluster_grid.representation == rep) & (cluster_grid.algorithm == alg)]
+        if len(g): ax[1].plot(g.k, g.sil_common, ls=ls, marker="o", ms=4, lw=1.8, color=L.SERIES[i], label=f"{alg.split(' (')[0]} · {rep.split(' ')[0]}")
+ax[1].set(title="Silhouette on a common basis\n(raw space, mean of Euclidean & Manhattan)", xlabel="K", ylabel="Mean silhouette"); ax[1].legend(fontsize=7)
+for i, rep in enumerate(REPS):
+    for alg, ls in styles.items():
+        g = cluster_grid[(cluster_grid.representation == rep) & (cluster_grid.algorithm == alg)]
+        if len(g): ax[2].plot(g.k, g.min_cluster_share_pct, ls=ls, marker="o", ms=4, lw=1.8, color=L.SERIES[i])
+ax[2].axhline(5, color=L.UI["terra"], lw=1.2, label="5% actionability floor")
+ax[2].set(title="Smallest segment's share of members", xlabel="K", ylabel="% of members"); ax[2].legend()
+save(fig, "cluster_elbow_silhouette")
+
+%%MD
+**Selection rule (declared before looking at the winner).** Among K-means and K-medoids solutions, consider K = 3…8 (K = 2 can only split "active vs lapsed", which cannot answer leadership's questions about value, tier and risk at the same time; K > 8 is not manageable for marketing). Keep solutions whose smallest segment holds ≥ 5% of members. Average-linkage agglomerative clustering is used only as a sensitivity check because it tends to isolate a handful of extreme customers into singleton clusters (visible in the right-hand panel). Choose the highest **common-basis** silhouette among eligible solutions; if several are within 0.002 of the best, prefer the simpler pipeline (raw features before PCA, K-means before K-medoids, smaller K). Check that the choice sits at or after the elbow, then confirm stability by bootstrap.
+
+**Why not rank by each algorithm's own-metric silhouette?** Because it is not a like-for-like comparison: the same partition scores differently under Manhattan and Euclidean distance (the check printed below shows by how much), so that ranking would favour whichever algorithm happens to be scored with the more generous metric. The printout also reports which solution the own-metric ranking would have picked, so the effect of this choice is visible.
+
+%%CODE
+elig = cluster_grid[(cluster_grid.k.between(3, 8)) & (cluster_grid.min_cluster_share_pct >= 5) &
+                    (cluster_grid.algorithm != "Agglomerative avg-link (Manhattan)")].sort_values("sil_common", ascending=False)
+display(elig[["representation", "algorithm", "k", "sil_common", "sil_common_euclid", "sil_common_manhattan", "silhouette", "min_cluster_share_pct"]]
+        .rename(columns={"silhouette": "own_metric_silhouette"}).head(8).round(3))
+elig["simplicity"] = elig.representation.str.startswith("PCA").astype(int) * 2 + elig.algorithm.str.startswith("K-medoids").astype(int)
+best = elig[elig.sil_common >= elig.sil_common.max() - 0.002].sort_values(["simplicity", "k"]).iloc[0]
+K_FINAL, REP_FINAL, ALG_FINAL = int(best.k), best.representation, best.algorithm
+own_rank = elig.sort_values("silhouette", ascending=False).iloc[0]
+print(f"Selected: {ALG_FINAL} on {REP_FINAL}, K = {K_FINAL} (common-basis silhouette {best.sil_common:.3f}; Euclidean {best.sil_common_euclid:.3f}, "
+      f"Manhattan {best.sil_common_manhattan:.3f}; smallest segment {best.min_cluster_share_pct:.1f}%)")
+print(f"Check: the same partition scores {best.sil_common_euclid:.3f} under Euclidean and {best.sil_common_manhattan:.3f} under Manhattan distance. "
+      f"Ranking by own-metric silhouette would have picked {own_rank.algorithm} on {own_rank.representation}, K = {int(own_rank.k)} "
+      f"({own_rank.silhouette:.3f}) — {'a different solution' if (own_rank.algorithm, own_rank.representation, own_rank.k) != (ALG_FINAL, REP_FINAL, K_FINAL) else 'the same solution'}.")
+
+# Stability: bootstrap 80% subsamples, refit, compare labels on all customers with the reference (adjusted Rand index)
+X_final = REPS[REP_FINAL]
+def fit_final(X, seed=SEED):
+    if ALG_FINAL.startswith("K-means"):
+        return KMeans(n_clusters=K_FINAL, n_init=20, random_state=seed).fit(X)
+    return kmedoids.KMedoids(n_clusters=K_FINAL, metric="manhattan", method="fasterpam", random_state=seed).fit(X)
+ref_model = fit_final(X_final); ref_labels = np.asarray(ref_model.labels_, dtype=int)   # kmedoids < 0.5.4 returns unsigned labels
+rng = np.random.default_rng(SEED); aris = []
+for b in range(10 if FAST else 25):
+    idx = rng.choice(len(X_final), int(0.8 * len(X_final)), replace=False)
+    mdl = fit_final(X_final[idx], seed=SEED + b + 1)
+    if ALG_FINAL.startswith("K-means"):
+        lab = mdl.predict(X_final)
+    else:
+        d = np.abs(X_final[:, None, :] - X_final[idx][mdl.medoid_indices_][None, :, :]).sum(-1); lab = d.argmin(1)
+    aris.append(adjusted_rand_score(ref_labels, lab))
+# Agreement across distance metrics and representations at the chosen K
+agree, sol = {}, {}
+for rep, X in REPS.items():
+    sol[f"K-means · {rep}"] = KMeans(n_clusters=K_FINAL, n_init=20, random_state=SEED).fit(X).labels_
+    if HAS_KMEDOIDS:
+        sol[f"K-medoids (Manhattan) · {rep}"] = np.asarray(kmedoids.KMedoids(n_clusters=K_FINAL, metric="manhattan", method="fasterpam", random_state=SEED).fit(X).labels_, dtype=int)
+for k_, l_ in sol.items():
+    agree[k_] = adjusted_rand_score(ref_labels, l_)
+ari_matrix = pd.DataFrame({a: {b: adjusted_rand_score(sol[a], sol[b]) for b in sol} for a in sol}).round(3)
+ari_matrix.to_csv(L.METRICS / "cluster_agreement_ari.csv")
+cluster_choice = {"k": K_FINAL, "representation": REP_FINAL, "algorithm": ALG_FINAL, "silhouette": float(best.sil_common),
+                  "silhouette_basis": "common: 15 standardised raw features, mean of Euclidean and Manhattan",
+                  "silhouette_common_euclid": float(best.sil_common_euclid), "silhouette_common_manhattan": float(best.sil_common_manhattan),
+                  "silhouette_own_metric": float(best.silhouette),
+                  "own_metric_ranking_would_pick": f"{own_rank.algorithm} · {own_rank.representation} · K={int(own_rank.k)}",
+                  "min_cluster_share_pct": float(best.min_cluster_share_pct), "bootstrap_ari_mean": float(np.mean(aris)),
+                  "bootstrap_ari_min": float(np.min(aris)), "n_pcs": n90, "agreement_ari_with_selected": agree,
+                  "rule": "max common-basis silhouette among K-means/K-medoids, K in 3..8, smallest segment >= 5%; within 0.002 → simpler pipeline"}
+L.save_json(cluster_choice, L.METRICS / "cluster_choice.json")
+print(f"Bootstrap stability: mean ARI = {np.mean(aris):.3f} (min {np.min(aris):.3f}) over {len(aris)} resamples")
+display(Markdown(f"**Agreement between the four solutions at K = {K_FINAL}** (adjusted Rand index: 1 = identical partition, 0 = chance)"))
+ari_matrix
+
+%%CODE
+cv["segment_id"] = ref_labels
+sil_vals = silhouette_samples(X_final, ref_labels, metric="euclidean" if ALG_FINAL.startswith("K-means") else "manhattan")
+fig, ax = plt.subplots(figsize=(8, 4.5)); y0 = 0
+for c in range(K_FINAL):
+    v = np.sort(sil_vals[ref_labels == c])
+    ax.fill_betweenx(np.arange(y0, y0 + len(v)), 0, v, color=L.SERIES[c], alpha=0.85)
+    ax.text(-0.05, y0 + len(v) / 2, f"seg {c}", ha="right", va="center", fontsize=8.5); y0 += len(v) + 30
+ax.axvline(sil_vals.mean(), color=L.UI["navy"], lw=1.2, label=f"mean {sil_vals.mean():.3f}")
+ax.set(title=f"Per-customer silhouette, selected solution (K = {K_FINAL})", xlabel="Silhouette value", yticks=[]); ax.legend()
+save(fig, "cluster_silhouette_samples")
+
+%%MD
+### 8.1 Segment profiles
+
+%%CODE
+def profile_segments(df, col):
+    g = df.groupby(col)
+    prof = pd.DataFrame({
+        "members": g.size(), "share_of_members_pct": g.size() / len(df) * 100,
+        "revenue_aed": g.monetary.sum(), "share_of_revenue_pct": g.monetary.sum() / df.monetary.sum() * 100,
+        "monetary_mean_aed": g.monetary.mean(), "monetary_median_aed": g.monetary.median(),
+        "recency_days_mean": g.recency_days.mean(), "frequency_mean": g.frequency.mean(), "avg_ticket_aed": g.avg_ticket.mean(),
+        "discount_rate_pct": g.discount_rate.mean() * 100, "n_banners_mean": g.n_banners.mean(), "trend90_mean": g.trend90.mean(),
+        "churn_rate_pct": g.churned.mean() * 100, "age_mean": g.age.mean(), "has_kids_pct": g.has_kids.mean() * 100,
+        "family_size_mean": g.family_size.mean(), "tenure_months_mean": g.tenure_months.mean(),
+    })
+    for b in L.CORE_BANNERS:
+        prof[f"share_{b}_pct"] = g[f"bshare_{b}"].mean() * 100
+        prof[f"reach_{b}_pct"] = g[f"bspend_{b}"].apply(lambda s: (s > 0).mean() * 100)
+    return prof
+prof = profile_segments(cv, "segment_id")
+prof.T.round(1)
+
+%%MD
+**Naming rule (declared before naming).** Names come from explicit tests on the profile table, so they are reproducible and evidence-based rather than chosen by eye. Each segment is tested against every rule below, scored by how far it exceeds the member base (an index of 1.0 = base), and names are assigned greedily from the strongest match; a name is used only if its test is passed:
+
+| Name | Test (segment vs all members) |
+|---|---|
+| Lapsing members | churn rate ≥ base + 15 pp **or** mean recency ≥ 1.5 × base |
+| Family multi-banner shoppers | Babyshop reach ≥ 1.5 × base **and** Funcity reach ≥ 1.3 × base |
+| Premium home-led shoppers | Home Centre reach ≥ 1.5 × base **or** average ticket ≥ 1.3 × base |
+| Value home & discount-led shoppers | Homebox reach ≥ 1.4 × base **or** (discount rate ≥ 1.1 × base **and** ticket < base) |
+| Multi-banner core shoppers | banners visited ≥ 1.15 × base |
+| Emerging / growing members | 90-day trend above base (fallback) |
+
+%%CODE
+base = {k: cv[k].mean() for k in ["recency_days", "avg_ticket", "discount_rate", "n_banners", "trend90", "monetary", "churned"]}
+for b in L.CORE_BANNERS:
+    base[f"reach_{b}"] = (cv[f"bspend_{b}"] > 0).mean() * 100
+def rule_scores(p):
+    """Return {name: strength} for every naming test the segment passes."""
+    sc = {}
+    if p.churn_rate_pct >= base["churned"] * 100 + 15 or p.recency_days_mean >= 1.5 * base["recency_days"]:
+        sc["Lapsing members"] = max(p.churn_rate_pct / (base["churned"] * 100), p.recency_days_mean / base["recency_days"])
+    if p["reach_Babyshop_pct"] >= 1.5 * base["reach_Babyshop"] and p["reach_Funcity_pct"] >= 1.3 * base["reach_Funcity"]:
+        sc["Family multi-banner shoppers"] = (p["reach_Babyshop_pct"] / base["reach_Babyshop"] + p["reach_Funcity_pct"] / base["reach_Funcity"]) / 2
+    if p["reach_Home Centre_pct"] >= 1.5 * base["reach_Home Centre"] or p.avg_ticket_aed >= 1.3 * base["avg_ticket"]:
+        sc["Premium home-led shoppers"] = max(p["reach_Home Centre_pct"] / base["reach_Home Centre"], p.avg_ticket_aed / base["avg_ticket"])
+    if p["reach_Homebox_pct"] >= 1.4 * base["reach_Homebox"] or (p.discount_rate_pct >= 110 * base["discount_rate"] and p.avg_ticket_aed < base["avg_ticket"]):
+        sc["Value home & discount-led shoppers"] = max(p["reach_Homebox_pct"] / base["reach_Homebox"], p.discount_rate_pct / (100 * base["discount_rate"]))
+    if p.n_banners_mean >= 1.15 * base["n_banners"]:
+        sc["Multi-banner core shoppers"] = p.n_banners_mean / base["n_banners"]
+    return sc
+cands = sorted(((sc, seg, nm) for seg, p in prof.iterrows() for nm, sc in rule_scores(p).items()), reverse=True)
+names, used = {}, set()
+for sc, seg, nm in cands:
+    if seg not in names and nm not in used:
+        names[seg] = nm; used.add(nm)
+for seg, p in prof.iterrows():
+    if seg not in names:
+        names[seg] = "Emerging / growing members" if p.trend90_mean > base["trend90"] else "Mixed-behaviour members"
+# guarantee unique names
+seen = {}
+for s, n in names.items():
+    seen[n] = seen.get(n, 0) + 1
+    if seen[n] > 1: names[s] = f"{n} ({seen[n]})"
+cv["segment"] = cv.segment_id.map(names)
+prof.insert(0, "segment", prof.index.map(names))
+evidence = []
+for s, p in prof.iterrows():
+    evidence.append(f"{p.segment}: {p.members:,} members ({p.share_of_members_pct:.0f}%), {p.share_of_revenue_pct:.0f}% of revenue; "
+                    f"recency {p.recency_days_mean:.0f}d (base {base['recency_days']:.0f}); churn {p.churn_rate_pct:.0f}% (base {base['churned']*100:.0f}%); "
+                    f"ticket AED {p.avg_ticket_aed:.0f} (base {base['avg_ticket']:.0f}); discount {p.discount_rate_pct:.0f}% (base {base['discount_rate']*100:.0f}%); "
+                    f"reach — Home Centre {p['reach_Home Centre_pct']:.0f}% (base {base['reach_Home Centre']:.0f}%), Homebox {p['reach_Homebox_pct']:.0f}% (base {base['reach_Homebox']:.0f}%), "
+                    f"Babyshop {p['reach_Babyshop_pct']:.0f}% (base {base['reach_Babyshop']:.0f}%), Funcity {p['reach_Funcity_pct']:.0f}% (base {base['reach_Funcity']:.0f}%); "
+                    f"kids {p.has_kids_pct:.0f}%; banners {p.n_banners_mean:.1f} (base {base['n_banners']:.1f})")
+prof["evidence"] = evidence
+prof.to_csv(L.METRICS / "segment_profiles.csv")
+L.save_json({int(k): v for k, v in names.items()}, L.METRICS / "segment_names.json")
+for e in evidence: print("•", e)
+
+%%CODE
+fig, ax = plt.subplots(1, 2, figsize=(14, 5))
+markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+seg_order = prof.sort_values("members", ascending=False).segment.tolist()
+for i, sname in enumerate(seg_order):
+    m = cv.segment == sname
+    ax[0].scatter(cv.loc[m, "PC1"], cv.loc[m, "PC2"], s=9, alpha=0.6, color=L.SERIES[i], marker=markers[i], label=sname, edgecolor="none")
+ax[0].set(title=f"Segments in PC1–PC2 space (K = {K_FINAL})", xlabel="PC1", ylabel="PC2"); ax[0].legend(markerscale=2, fontsize=8)
+p2 = prof.set_index("segment").loc[seg_order]
+x = np.arange(len(p2)); w = 0.38
+ax[1].bar(x - w/2, p2.share_of_members_pct, w, color=L.UI["muted"], label="% of members")
+ax[1].bar(x + w/2, p2.share_of_revenue_pct, w, color=L.SERIES[0], label="% of recorded revenue")
+for i, (a_, b_) in enumerate(zip(p2.share_of_members_pct, p2.share_of_revenue_pct)):
+    ax[1].text(i - w/2, a_, f"{a_:.0f}%", ha="center", va="bottom", fontsize=8); ax[1].text(i + w/2, b_, f"{b_:.0f}%", ha="center", va="bottom", fontsize=8)
+ax[1].set_xticks(x, [s.replace(" ", "\n", 2) for s in p2.index], fontsize=8); ax[1].set(title="Members vs revenue by segment", ylabel="%"); ax[1].legend()
+save(fig, "segments_overview")
+
+%%CODE
+km_raw, km_pca = "K-means · raw (15 std. features)", f"K-means · PCA ({n90} PCs)"
+md_raw, md_pca = "K-medoids (Manhattan) · raw (15 std. features)", f"K-medoids (Manhattan) · PCA ({n90} PCs)"
+gk = cluster_grid[cluster_grid.k == K_FINAL].set_index(["algorithm", "representation"])
+RAW, PCA_ = "raw (15 std. features)", f"PCA ({n90} PCs)"
+KM, MD = "K-means (Euclidean)", "K-medoids (Manhattan)"
+c = lambda alg, rep, col="sil_common": gk.loc[(alg, rep), col]
+# raw vs PCA (K-means), on the common basis
+d_rep = c(KM, PCA_) - c(KM, RAW)
+rep_note = ("PCA neither helped nor hurt the segmentation" if abs(d_rep) <= 0.002 else
+            "PCA gave slightly better-separated segments" if d_rep > 0 else "PCA gave slightly less separated segments")
+keep_note = ("the raw representation is kept because it is the simpler pipeline and its centres read directly in business units"
+             if REP_FINAL.startswith("raw") else "the PCA representation is kept because it separated members better")
+# Euclidean vs Manhattan on raw features, judged on the same space under both metrics
+if HAS_KMEDOIDS:
+    e_km, e_md, m_km, m_md = c(KM, RAW, "sil_common_euclid"), c(MD, RAW, "sil_common_euclid"), c(KM, RAW, "sil_common_manhattan"), c(MD, RAW, "sil_common_manhattan")
+    own_km, own_md = c(KM, RAW, "silhouette"), c(MD, RAW, "silhouette")
+    if e_km > e_md and m_km > m_md:
+        metric_note = f"scored on the same space, K-means separates members better under **both** metrics (Euclidean {e_km:.3f} vs {e_md:.3f}; Manhattan {m_km:.3f} vs {m_md:.3f})"
+    elif e_km < e_md and m_km < m_md:
+        metric_note = f"scored on the same space, K-medoids separates members better under **both** metrics (Euclidean {e_md:.3f} vs {e_km:.3f}; Manhattan {m_md:.3f} vs {m_km:.3f})"
+    else:
+        metric_note = f"each algorithm wins under its own metric (Euclidean: K-means {e_km:.3f} vs {e_md:.3f}; Manhattan: K-medoids {m_md:.3f} vs {m_km:.3f}), so the averaged score decides"
+    own_note = (f"On their own metrics K-medoids appears better ({own_md:.3f} vs {own_km:.3f}), but that compares a Manhattan score with a Euclidean one; "
+                if own_md > own_km else f"On their own metrics K-means scores {own_km:.3f} vs K-medoids {own_md:.3f}; ")
+    md_text = (f"* **Euclidean vs Manhattan:** on raw features K-means and Manhattan K-medoids agree with ARI {ari_matrix.loc[km_raw, md_raw]:.2f}. {own_note}{metric_note}. "
+               "Manhattan distance with medoids is, in principle, less sensitive to extreme spenders (an actual member is the centre and distances are not squared); "
+               + (f"with log-transformed spend and bounded shares that advantage did not materialise here, so **{ALG_FINAL}** was selected."
+                if ALG_FINAL.startswith("K-means") else f"that robustness shows up here, and **{ALG_FINAL}** was selected."))
+else:
+    md_text = "* **Euclidean vs Manhattan:** the `kmedoids` package is not installed, so only K-means and Manhattan agglomerative clustering were compared."
+display(Markdown(f"""**Reflection — raw vs PCA, Euclidean vs Manhattan (at K = {K_FINAL}).**
+* **Raw vs PCA:** K-means on the raw standardised features and on the {n90} PCs agree with ARI {ari_matrix.loc[km_raw, km_pca]:.2f}; common-basis silhouettes {c(KM, RAW):.3f} (raw) vs {c(KM, PCA_):.3f} (PCA). Dropping the last ~10% of variance removes mostly fine detail of the banner-share mix — {rep_note}; {keep_note}.{f" For K-medoids the raw–PCA agreement is lower (ARI {ari_matrix.loc[md_raw, md_pca]:.2f}): its medoid search is more sensitive to the change of representation." if HAS_KMEDOIDS else ""}
+{md_text}
+* **Stability:** bootstrap ARI {cluster_choice['bootstrap_ari_mean']:.2f} on average (minimum {cluster_choice['bootstrap_ari_min']:.2f}) — the segments are reproducible, although all silhouettes are modest (customer behaviour is a continuum)."""))
+
+%%MD
+### 8.2 A second view — shopping-style segments (banner mix removed)
+The segments above are built partly from *which* banners members use. Because nobody shops both banners of a tier pair, they largely re-express the Home Centre / Homebox split, so it is fair to ask whether they describe behaviour or just banner membership. A second, independent view clusters members on **how they shop only** — number of purchases, total spend, average ticket, discount share and breadth (banners used) — with every banner-share and concentration feature removed. Recency and the 90-day trend are left out too, so this view describes *shopping style*, not lifecycle stage (lifecycle is the churn model's job). (`n_categories` is also left out: in this data it equals `n_banners` for every member, because each category is sold by one banner per tier and nobody shops both banners of a tier pair.)
+
+Method: the same as §8 — standardised features, K-means vs Manhattan K-medoids, K = 3…6, the like-for-like silhouette, a 5% minimum share, ties to the simpler pipeline. Names follow declared tests on z-scores of the cluster means (cluster mean − member mean, in member standard deviations):
+
+| Name | Test |
+|---|---|
+| Big-ticket shoppers | average ticket z ≥ 0.5 (score: ticket z + spend z) |
+| Deal-led light shoppers | discount z ≥ 0.3 **and** spend z < 0 (score: discount z − spend z) |
+| Broad multi-banner shoppers | banners z ≥ 0.5 (score: banners z) |
+| Frequent everyday shoppers | purchases z ≥ 0.5 **and** ticket z < 0 (score: purchases z − ticket z) |
+| Steady mid-range shoppers | fallback |
+
+%%CODE
+from sklearn.metrics import normalized_mutual_info_score
+from scipy.stats import chi2_contingency
+STYLE_FEATURES = ["log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners"]
+assert (cv.n_categories == cv.n_banners).all(), "n_categories differs from n_banners — revisit the feature choice"
+X_style = StandardScaler().fit_transform(cv[STYLE_FEATURES].astype(float))
+style_rows = []
+for k in range(3, 7):
+    for alg in ["K-means (Euclidean)"] + (["K-medoids (Manhattan)"] if HAS_KMEDOIDS else []):
+        mdl = (KMeans(n_clusters=k, n_init=20, random_state=SEED) if alg.startswith("K-means")
+               else kmedoids.KMedoids(n_clusters=k, metric="manhattan", method="fasterpam", random_state=SEED)).fit(X_style)
+        e, m = silhouette_score(X_style, mdl.labels_, metric="euclidean"), silhouette_score(X_style, mdl.labels_, metric="manhattan")
+        style_rows.append({"algorithm": alg, "k": k, "sil_common": (e + m) / 2, "sil_common_euclid": e, "sil_common_manhattan": m,
+                           "min_cluster_share_pct": np.bincount(np.asarray(mdl.labels_, dtype=int)).min() / len(X_style) * 100, "labels": np.asarray(mdl.labels_, dtype=int)})
+style_grid = pd.DataFrame(style_rows)
+elig_s = style_grid[style_grid.min_cluster_share_pct >= 5].copy()
+elig_s["simplicity"] = elig_s.algorithm.str.startswith("K-medoids").astype(int)
+best_s = elig_s[elig_s.sil_common >= elig_s.sil_common.max() - 0.002].sort_values(["simplicity", "k"]).iloc[0]
+style_grid.drop(columns="labels").to_csv(L.METRICS / "style_cluster_grid.csv", index=False)
+display(style_grid.drop(columns="labels").pivot_table(index="k", columns="algorithm", values="sil_common").round(3))
+print(f"Shopping-style view: {best_s.algorithm}, K = {int(best_s.k)} (like-for-like silhouette {best_s.sil_common:.3f}; smallest group {best_s.min_cluster_share_pct:.1f}%)")
+
+# --- evidence-based names ---
+cv["style_id"] = best_s.labels
+raw_style = {"frequency": "purchases", "monetary": "spend", "avg_ticket": "ticket", "discount_rate": "discount", "n_banners": "banners"}
+z = (cv.groupby("style_id")[list(raw_style)].mean() - cv[list(raw_style)].mean()) / cv[list(raw_style)].std()
+z = z.rename(columns=raw_style)
+def style_scores(r):
+    sc = {}
+    if r.ticket >= 0.5: sc["Big-ticket shoppers"] = r.ticket + r.spend
+    if r.discount >= 0.3 and r.spend < 0: sc["Deal-led light shoppers"] = r.discount - r.spend
+    if r.banners >= 0.5: sc["Broad multi-banner shoppers"] = r.banners
+    if r.purchases >= 0.5 and r.ticket < 0: sc["Frequent everyday shoppers"] = r.purchases - r.ticket
+    return sc
+cand_s = sorted(((sc, sid, nm) for sid, r in z.iterrows() for nm, sc in style_scores(r).items()), reverse=True)
+style_names, used_s = {}, set()
+for sc, sid, nm in cand_s:
+    if sid not in style_names and nm not in used_s:
+        style_names[sid] = nm; used_s.add(nm)
+for sid in z.index:
+    style_names.setdefault(sid, "Steady mid-range shoppers")
+cv["style_segment"] = cv.style_id.map(style_names)
+style_prof = cv.groupby("style_segment").agg(members=("churned", "size"), purchases_mean=("frequency", "mean"), spend_mean_aed=("monetary", "mean"),
+                                             avg_ticket_aed=("avg_ticket", "mean"), discount_rate_pct=("discount_rate", lambda s: s.mean() * 100),
+                                             banners_mean=("n_banners", "mean"), churn_rate_pct=("churned", lambda s: s.mean() * 100),
+                                             has_kids_pct=("has_kids", lambda s: s.mean() * 100))
+style_prof["share_of_members_pct"] = style_prof.members / len(cv) * 100
+style_prof["share_of_revenue_pct"] = cv.groupby("style_segment").monetary.sum() / cv.monetary.sum() * 100
+style_prof = style_prof.join(z.set_axis(z.index.map(style_names)).add_prefix("z_"))
+style_prof.to_csv(L.METRICS / "style_profiles.csv")
+display(style_prof.round(2))
+
+# --- how the two views relate ---
+ct = pd.crosstab(cv.segment, cv.style_segment)
+ct.to_csv(L.METRICS / "style_vs_banner_crosstab.csv")
+ari_views, nmi_views = adjusted_rand_score(cv.segment, cv.style_segment), normalized_mutual_info_score(cv.segment, cv.style_segment)
+modal_share = ct.max(axis=1).sum() / ct.values.sum()
+chi_p_style = chi2_contingency(pd.crosstab(cv.style_segment, cv.churned))[1]
+L.save_json({"algorithm": best_s.algorithm, "k": int(best_s.k), "features": STYLE_FEATURES, "silhouette_like_for_like": float(best_s.sil_common),
+             "names": {int(k): v for k, v in style_names.items()}, "ari_vs_banner_segments": float(ari_views), "nmi_vs_banner_segments": float(nmi_views),
+             "share_in_modal_style_of_their_banner_segment": float(modal_share), "churn_by_style_chi2_p": float(chi_p_style)}, L.METRICS / "style_choice.json")
+fig, ax = plt.subplots(1, 2, figsize=(15, 4.6), gridspec_kw={"width_ratios": [1.1, 1]})
+sns.heatmap(ct.div(ct.sum(axis=1), axis=0) * 100, annot=True, fmt=".0f", cmap="Blues", ax=ax[0], cbar_kws={"label": "% of banner-mix segment"}, linewidths=0.4)
+ax[0].set(title="Banner-mix segment (rows) × shopping style (columns), row %", xlabel="", ylabel=""); ax[0].tick_params(labelsize=8)
+zz = style_prof[[c for c in style_prof.columns if c.startswith("z_")]].rename(columns=lambda c: c[2:])
+sns.heatmap(zz, annot=True, fmt=".2f", cmap=sns.diverging_palette(15, 250, s=70, l=50, as_cmap=True), center=0, ax=ax[1], linewidths=0.4, cbar_kws={"label": "z vs all members"})
+ax[1].set(title="Shopping-style profiles (z-scores of cluster means)", xlabel="", ylabel=""); ax[1].tick_params(labelsize=8)
+save(fig, "style_segments")
+
+%%CODE
+off = ct.copy()
+for seg in off.index:
+    off.loc[seg, off.loc[seg].idxmax()] = 0
+top_off = off.stack().sort_values(ascending=False).head(2)
+vb = ("Value home & discount-led shoppers", "Big-ticket shoppers")
+vb_n = int(ct.loc[vb]) if vb[0] in ct.index and vb[1] in ct.columns else 0
+vb_note = ("" if not vb_n else
+           " The value-home (Homebox-led) members with a big-ticket style are natural premium-introduction prospects, cross-checked against the migration model in §19." if vb in top_off.index else
+           f" In particular, {vb_n:,} value-home (Homebox-led) members shop with a big-ticket style — natural premium-introduction prospects, cross-checked against the migration model in §19.")
+corro = ("the banner-mix segments are not an artefact of banner shares — the same broad groups reappear when only *how* members shop is used"
+         if ari_views >= 0.2 else "the two views largely disagree, so the banner-mix segments mostly reflect *which* banners members use rather than *how* they shop")
+display(Markdown(f"""**Reflection — what the second view adds.** The shopping-style view ({best_s.algorithm}, K = {int(best_s.k)}) agrees only partly with the banner-mix segments (adjusted Rand index {ari_views:.2f}, normalised mutual information {nmi_views:.2f}); {modal_share*100:.0f}% of members fall in the style most typical of their banner segment.
+* **Corroboration:** {corro}.
+* **New information:** the remaining {100 - modal_share*100:.0f}% are members whose style differs from their banner group. The largest such groups are {', '.join(f'{n:,} *{a}* members with a **{b}** style' for (a, b), n in top_off.items())}.{vb_note}
+* **Churn:** churn rates {'differ little' if chi_p_style >= 0.05 else 'differ'} between styles (chi-square p = {chi_p_style:.3f}; the same test is included, with a multiple-testing correction, in §18.4's association table){' — *who* members are and *how* they shop does not separate churners; *timing* does (§10)' if chi_p_style >= 0.05 else ''}.
+* **Use:** the banner-mix segments stay the primary segmentation (they drive bundles and targeting); the style view is a descriptive second lens and is never used as a model input."""))
+
+%%MD
+## §9 · Pipeline design — what depends on what (and why)
+
+| Step | Depends on | Why this order (and what was rejected) |
+|---|---|---|
+| Audit → unified view | raw files | Keys, duplicates and reconciliation must pass before any feature can be trusted; aggregating to one row per member only after validation prevents join inflation. |
+| Viva branch → Group financials | raw Viva file | Viva enters Group-level revenue only. Without a shared key it can never enter the customer view; forcing a join was rejected as manufacturing links. |
+| Unified view → standardisation → (raw features **or** PCA) → segmentation | engineered features | Features are standardised so no unit dominates distance; PCA is fitted as a candidate representation and both are clustered and scored on a common basis (§8) — the representation actually used is the one that separated members better, with ties going to the simpler raw pipeline. PCA also supplies the 2-D map. Segmenting on raw transactions was rejected: it measures baskets, not customers. |
+| Segmentation → *not* an input to churn or routing | — | Segments were built from recency (churn label window) and from home/fashion banner shares (routing labels), so using them as predictors would leak. They are used *after* modelling for targeting, priorities and per-segment bundles. |
+| Unified view → leakage-controlled classification | features at an earlier cutoff (churn) / non-target behaviour (routing) | The label-defining information is removed by design before any model sees the data. |
+| Classification → threshold & cost | calibrated probabilities | A threshold can only be chosen once probabilities are validated; it is tuned on training folds so the test set stays unbiased. |
+| Features → CLV (historical, next-period) → value-weighted churn priority | customer view at two dates | CLV supplies the "value" axis that turns a churn list into a prioritised retention list (Case Study: value-weighted churn). |
+| All models → bias–variance | fitted pipelines | Diagnostics compare train/CV/test for every model family under one protocol. |
+| Unified view + segments → Apriori → bundles → ε-greedy sandbox | Shukran ID baskets | Baskets exist only because Shukran unifies banners; segment-level rules make offers targetable; the bandit is a *simulation* of how offers would be tested. |
+| Everything → dashboard | artifacts only | The dashboard reads saved outputs and never retrains, so it cannot disagree with this notebook. |

@@ -1,0 +1,11 @@
+2026-10-23 16:28:40.621 Could not bind IPv6 wildcard address :::8599; falling back to 0.0.0.0:8599.
+2026-10-23 16:28:40.663 Uvicorn server started on 0.0.0.0:8599
+2026-10-23 16:28:40.986 Did not auto detect external IP.
+Please go to https://docs.streamlit.io/ for debugging hints.
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8599
+  Network URL: http://192.0.2.2:8599
+
+  Stopping...

@@ -1,0 +1,233 @@
+%%MD
+## §22 · Review addendum — label noise, class imbalance, imbalance-aware ensembles, nested CV
+
+Added after an external review of the finished analysis. It is **self-contained** (reloads the raw files, rebuilds the churn design from `lci_core` with the same seed, split and folds as §10) and **does not change any earlier selection, threshold or deployed model** — it tests whether the review's concerns would change them. Results go to `artifacts/metrics/` and the dashboard (Model laboratory → *Class imbalance…*; Data & methodology → *Data quality*).
+
+1. **How noisy is the churn label?**
+2. **How imbalanced is each target?**
+3. **Were ensembles disadvantaged?** In §10 only LR, Decision Tree and the SVMs had `class_weight` in their grids. Does giving the ensembles the same option change the ranking?
+4. **Is the cross-validated score optimistic?** §10 tunes and scores on the same folds; nested CV measures that selection optimism.
+
+%%CODE
+import os, time, json, warnings
+import numpy as np, pandas as pd
+from IPython.display import display, Markdown
+import lci_core as L
+from lci_core import SEED
+from sklearn.base import clone
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV, cross_validate, cross_val_score
+from sklearn.metrics import average_precision_score, recall_score, f1_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, BaggingClassifier, AdaBoostClassifier
+try:
+    from xgboost import XGBClassifier; HAS_XGB_ADD = True
+except Exception:
+    HAS_XGB_ADD = False
+
+FAST_ADD = os.environ.get("LCI_FAST") == "1"
+cust_r, tx_r, viva_r, _ = L.load_raw()
+OBS = tx_r["date"].max(); REF = OBS - pd.Timedelta(days=90)
+cv_now_r = L.build_customer_view(cust_r, tx_r, OBS)
+cv_ref_r = L.build_customer_view(cust_r, tx_r, REF)
+CHURN_NUM_R = ["age", "family_size", "has_kids", "days_member_ref", "recency_days", "recency_gap_ratio", "mean_gap_days", "days_since_first",
+               "purchase_rate_30d", "log_spend_rate_30d", "log_avg_ticket", "discount_rate", "n_banners", "n_categories", "banner_hhi",
+               "f90", "f180", "log_spend90", "log_spend180", "trend90"] + [f"bshare_{b}" for b in L.CORE_BANNERS]
+CHURN_CAT_R = ["gender", "emirate"]
+churn_r = cv_ref_r[cv_ref_r.has_tx == 1].copy()
+Xr, yr = churn_r[CHURN_NUM_R + CHURN_CAT_R], churn_r.churned
+Xtr_r, Xte_r, ytr_r, yte_r = train_test_split(Xr, yr, test_size=0.25, stratify=yr, random_state=SEED)
+skf_r = StratifiedKFold(3 if FAST_ADD else 5, shuffle=True, random_state=SEED)
+
+def make_prep_r(num, cat):
+    return ColumnTransformer([
+        ("num", Pipeline([("impute", SimpleImputer(strategy="median", add_indicator=True)), ("scale", StandardScaler())]), num),
+        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat)], verbose_feature_names_out=False)
+prep_r = make_prep_r(CHURN_NUM_R, CHURN_CAT_R)
+LB_ORIG = pd.read_csv(L.METRICS / "leaderboard_churn.csv").set_index("model")
+print(f"Rebuilt churn design: {len(churn_r):,} members with history · train {len(Xtr_r):,} / test {len(Xte_r):,} · prevalence {yr.mean():.3f}")
+_chk = cross_validate(Pipeline([("prep", prep_r), ("m", LogisticRegression(max_iter=3000, C=10))]), Xtr_r, ytr_r, cv=skf_r, scoring="average_precision")
+print(f"Reproduction check — LR CV PR-AUC: §10 {LB_ORIG.loc['Logistic Regression','cv_pr_auc']:.3f} · rebuilt here {_chk['test_score'].mean():.3f}")
+
+%%MD
+### 22.1 How noisy is the churn label?
+
+%%CODE
+rule = (cv_now_r.recency_days > 90).astype(int)
+lab = cv_now_r.churned.astype(int)
+audit = {
+    "members": int(len(lab)), "churned": int(lab.sum()), "churn_rate": float(lab.mean()),
+    "majority_class_accuracy": float(1 - lab.mean()),
+    "rule_agreement_pct": float((rule == lab).mean() * 100),
+    "churned_but_bought_within_90d": int(((lab == 1) & (rule == 0)).sum()),
+    "churned_but_bought_within_60d": int(((lab == 1) & (cv_now_r.recency_days <= 60)).sum()),
+    "active_but_overdue_over_90d": int(((lab == 0) & (rule == 1)).sum()),
+    "excluded_no_history_at_reference": int((cv_ref_r.has_tx == 0).sum()),
+    "excluded_churn_rate": float(cv_ref_r.loc[cv_ref_r.has_tx == 0, "churned"].mean()),
+    "included_churn_rate": float(cv_ref_r.loc[cv_ref_r.has_tx == 1, "churned"].mean()),
+}
+L.save_json(audit, L.METRICS / "churn_label_audit.json")
+q = pd.read_csv(L.METRICS / "quality_findings.csv")
+new_rows = pd.DataFrame([
+    ("Churn label disagrees with the 90-day inactivity rule", audit["churned_but_bought_within_90d"] + audit["active_but_overdue_over_90d"],
+     f"{audit['churned_but_bought_within_90d']} churners bought within 90 days of the as-of date ({audit['churned_but_bought_within_60d']} within 60); "
+     f"{audit['active_but_overdue_over_90d']} non-churners inactive > 90 days; rule agrees for {audit['rule_agreement_pct']:.1f}%",
+     "Retained as supplied. Treated as label noise that caps achievable skill; not corrected, because the true churn definition is undocumented."),
+    ("Members with no purchase before the churn reference date (as-of − 90 days)", audit["excluded_no_history_at_reference"],
+     f"churn rate {audit['excluded_churn_rate']*100:.1f}% vs {audit['included_churn_rate']*100:.1f}% for members with history",
+     "Excluded from churn training (cannot be scored at that date); scored by the deployed model at the as-of date. Excluding them is correct: near-certain negatives."),
+], columns=q.columns)
+q = pd.concat([q[~q.finding.isin(new_rows.finding)], new_rows], ignore_index=True)
+q.to_csv(L.METRICS / "quality_findings.csv", index=False)
+display(pd.Series(audit, name="value").to_frame())
+display(Markdown(f"""**Reading the audit.** The rule *churned = no purchase in the last 90 days* agrees with the supplied flag for **{audit['rule_agreement_pct']:.1f}%** of members, so the flag is not a pure 90-day rule:
+**{audit['churned_but_bought_within_90d']}** of {audit['churned']} churners ({audit['churned_but_bought_within_90d']/audit['churned']*100:.0f}%) purchased within the last 90 days ({audit['churned_but_bought_within_60d']} within 60), and **{audit['active_but_overdue_over_90d']}** active members have been silent for more than 90 days.
+That noise caps any churn model's skill. It is documented, not 'fixed': relabelling to match our own rule would be circular. A majority-class classifier already scores **{audit['majority_class_accuracy']*100:.1f}%** accuracy, so accuracy at the 0.5 threshold is uninformative for churn — PR-AUC, recall and the cost-tuned threshold are the right lenses."""))
+
+%%MD
+### 22.2 Class balance of every target
+
+%%CODE
+cm_master = pd.read_csv(L.METRICS / "customer_master.csv", index_col=0)
+rows = [("Churn (early-warning training set)", "Churned", int(yr.sum()), int((1 - yr).sum()))]
+for key, pos_name, label in [("home", "Home Centre (premium)", "Home Centre vs Homebox"), ("fashion", "Splash (premium)", "Splash vs Max")]:
+    s = cm_master[f"{key}_label"].dropna()
+    rows.append((label, pos_name, int((s == 1).sum()), int((s == 0).sum())))
+bal = pd.DataFrame(rows, columns=["target", "positive class", "positives", "negatives"])
+bal["n"] = bal.positives + bal.negatives
+bal["positive_share_pct"] = (bal.positives / bal.n * 100).round(1)
+bal["imbalance_ratio (neg:pos)"] = (bal.negatives / bal.positives).round(2)
+bal["handling"] = ["stratified split + CV; PR-AUC primary; cost-tuned threshold; class_weight in LR / tree / SVM grids (and ensembles in §22.3)",
+                   "near-balanced: stratified split + CV, ROC-AUC primary, no re-weighting needed",
+                   "near-balanced: stratified split + CV, ROC-AUC primary, no re-weighting needed"]
+bal.to_csv(L.METRICS / "class_balance.csv", index=False)
+display(bal)
+
+%%MD
+### 22.3 Imbalance-aware ensembles — same protocol as §10, plus `class_weight` / `scale_pos_weight` in the grids
+
+Same split, folds, primary metric (PR-AUC) and grids as §10, **plus** an imbalance option for each ensemble that supports it: Random Forest / Extra Trees (`class_weight`), bagged trees (base-tree `class_weight`), AdaBoost (balanced stump), XGBoost (`scale_pos_weight`). scikit-learn's Gradient Boosting has no class-weight argument and is left as in §10.
+
+%%CODE
+pos_rate = float(ytr_r.mean()); spw = round((1 - pos_rate) / pos_rate, 2)
+def shrink_add(g):
+    return {k: v[:2] for k, v in g.items()} if FAST_ADD else g
+specs_w = {
+    "Random Forest": (RandomForestClassifier(n_estimators=300, random_state=SEED, n_jobs=1),
+        {"m__max_depth": [None, 8], "m__min_samples_leaf": [1, 5, 15], "m__max_features": ["sqrt", 0.5], "m__class_weight": [None, "balanced_subsample"]}),
+    "Extra Trees": (ExtraTreesClassifier(n_estimators=300, random_state=SEED, n_jobs=1),
+        {"m__max_depth": [None, 8], "m__min_samples_leaf": [1, 5, 15], "m__max_features": ["sqrt", 0.5], "m__class_weight": [None, "balanced_subsample"]}),
+    "Bagged Trees": (BaggingClassifier(DecisionTreeClassifier(random_state=SEED), n_estimators=150, random_state=SEED, n_jobs=1),
+        {"m__max_samples": [0.6, 1.0], "m__estimator__max_depth": [None, 8], "m__estimator__class_weight": [None, "balanced"]}),
+    "AdaBoost": (AdaBoostClassifier(random_state=SEED),
+        {"m__n_estimators": [100, 300], "m__learning_rate": [0.05, 0.3, 1.0],
+         "m__estimator": [DecisionTreeClassifier(max_depth=1), DecisionTreeClassifier(max_depth=1, class_weight="balanced")]}),
+}
+if HAS_XGB_ADD:
+    specs_w["XGBoost"] = (XGBClassifier(eval_metric="logloss", random_state=SEED, n_jobs=1, tree_method="hist", subsample=0.8, colsample_bytree=0.8),
+        {"m__n_estimators": [200, 400], "m__max_depth": [2, 4], "m__learning_rate": [0.03, 0.1], "m__scale_pos_weight": [1.0, spw]})
+SC = {"pr_auc": "average_precision", "roc_auc": "roc_auc", "recall": "recall", "precision": "precision", "f1": "f1"}
+
+def chose_weighting(params):
+    for k, v in params.items():
+        if "class_weight" in k and v is not None: return True
+        if "scale_pos_weight" in k and v != 1.0: return True
+        if k == "m__estimator" and getattr(v, "class_weight", None) is not None: return True
+    return False
+
+res_rows = []
+for name, (est, grid) in specs_w.items():
+    t0 = time.time()
+    gs = GridSearchCV(Pipeline([("prep", prep_r), ("m", est)]), shrink_add(grid), scoring="average_precision", cv=skf_r, n_jobs=1, refit=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore"); gs.fit(Xtr_r, ytr_r)
+    best = Pipeline([("prep", prep_r), ("m", clone(est))]).set_params(**gs.best_params_)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r = cross_validate(best, Xtr_r, ytr_r, cv=skf_r, scoring=SC)
+        fitted = clone(best).fit(Xtr_r, ytr_r)
+    p = fitted.predict_proba(Xte_r)[:, 1]; yhat = (p >= 0.5).astype(int)
+    row = {"model": name, "weighting_chosen": chose_weighting(gs.best_params_),
+           "best_params": str({k[3:]: (v if not hasattr(v, "get_params") else f"stump(class_weight={v.class_weight})") for k, v in gs.best_params_.items()})}
+    for m in SC: row[f"cv_{m}"] = r[f"test_{m}"].mean(); row[f"cv_{m}_std"] = r[f"test_{m}"].std()
+    row.update(test_pr_auc=average_precision_score(yte_r, p), test_recall_at_050=recall_score(yte_r, yhat), test_f1_at_050=f1_score(yte_r, yhat), seconds=round(time.time() - t0))
+    o = LB_ORIG.loc[name]
+    row.update(orig_cv_pr_auc=o.cv_pr_auc, orig_cv_recall=o.cv_recall, orig_cv_f1=o.cv_f1, orig_test_pr_auc=o.test_pr_auc)
+    row["delta_cv_pr_auc"] = row["cv_pr_auc"] - o.cv_pr_auc
+    se = np.sqrt(row["cv_pr_auc_std"] ** 2 + o.cv_pr_auc_std ** 2) / np.sqrt(skf_r.get_n_splits())
+    row["verdict_pr_auc"] = "material" if abs(row["delta_cv_pr_auc"]) > 2 * se else "within noise"
+    res_rows.append(row); print(f"{name}: done in {row['seconds']}s")
+imb = pd.DataFrame(res_rows)
+imb.to_csv(L.METRICS / "imbalance_ensemble_retest.csv", index=False)
+display(imb[["model", "weighting_chosen", "orig_cv_pr_auc", "cv_pr_auc", "delta_cv_pr_auc", "verdict_pr_auc", "orig_cv_recall", "cv_recall", "orig_cv_f1", "cv_f1", "orig_test_pr_auc", "test_pr_auc"]].round(3))
+best_single = LB_ORIG[LB_ORIG.family == "Single"].cv_pr_auc.max(); best_single_name = LB_ORIG[LB_ORIG.family == "Single"].cv_pr_auc.idxmax()
+best_w = imb.loc[imb.cv_pr_auc.idxmax()]
+display(Markdown(f"""**Reading the re-test.** Best single learner in §10: **{best_single_name}** (CV PR-AUC {best_single:.3f}). Best ensemble here: **{best_w.model}** ({best_w.cv_pr_auc:.3f}; §10 version {best_w.orig_cv_pr_auc:.3f}).
+Models whose grid chose a re-weighted option: {', '.join(imb[imb.weighting_chosen].model) or 'none'}. PR-AUC changes are {'all within noise (≤ 2 pooled SE)' if (imb.verdict_pr_auc == 'within noise').all() else 'material for: ' + ', '.join(imb[imb.verdict_pr_auc == 'material'].model)}.
+Re-weighting mainly shifts **recall and F1 at the 0.5 threshold** rather than ranking quality (PR-AUC) — which is why the cost-tuned threshold in §13 matters more than class weights for the deployed list."""))
+
+%%MD
+### 22.4 Nested cross-validation — how optimistic are the §10 scores?
+
+Inner 3-fold CV tunes; outer folds (training set only) score data the tuning never saw. Grids are trimmed around the §10 optimum for run time, so this checks **selection optimism**, not a replacement leaderboard.
+
+%%CODE
+inner = StratifiedKFold(3, shuffle=True, random_state=SEED + 1)
+outer = StratifiedKFold(3 if FAST_ADD else 5, shuffle=True, random_state=SEED + 7)
+nested_specs = {
+    "Logistic Regression": (LogisticRegression(max_iter=3000), {"m__C": [0.01, 0.1, 1, 10], "m__class_weight": [None, "balanced"]}),
+    "SVM (RBF)": (SVC(kernel="rbf", random_state=SEED), {"m__C": [1, 3], "m__gamma": [0.01, 0.05], "m__class_weight": [None, "balanced"]}),
+    "Random Forest": (RandomForestClassifier(n_estimators=300, random_state=SEED, n_jobs=1), {"m__max_depth": [None, 8], "m__min_samples_leaf": [5, 15], "m__max_features": [0.5]}),
+}
+if HAS_XGB_ADD:
+    nested_specs["XGBoost"] = (XGBClassifier(eval_metric="logloss", random_state=SEED, n_jobs=1, tree_method="hist", subsample=0.8, colsample_bytree=0.8),
+                               {"m__n_estimators": [200, 400], "m__max_depth": [2, 4], "m__learning_rate": [0.03]})
+nrows = []
+for name, (est, grid) in nested_specs.items():
+    t0 = time.time()
+    gs = GridSearchCV(Pipeline([("prep", prep_r), ("m", est)]), shrink_add(grid), scoring="average_precision", cv=inner, n_jobs=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore"); sc = cross_val_score(gs, Xtr_r, ytr_r, cv=outer, scoring="average_precision")
+    o = LB_ORIG.loc[name]
+    nrows.append({"model": name, "family": o.family, "non_nested_cv_pr_auc": o.cv_pr_auc, "nested_cv_pr_auc": sc.mean(), "nested_std": sc.std(), "optimism": o.cv_pr_auc - sc.mean(), "seconds": round(time.time() - t0)})
+    print(f"{name}: nested {sc.mean():.3f} (non-nested {o.cv_pr_auc:.3f})")
+nest = pd.DataFrame(nrows)
+nest.to_csv(L.METRICS / "nested_cv_churn.csv", index=False)
+display(nest.round(3))
+best_ens_n = nest[nest.family != "Single"].nested_cv_pr_auc.max(); best_sing_n = nest[nest.family == "Single"].nested_cv_pr_auc.max()
+display(Markdown(f"""**Reading the nested CV.** Mean optimism (non-nested minus nested PR-AUC) is **{nest.optimism.mean():+.3f}** (range {nest.optimism.min():+.3f} to {nest.optimism.max():+.3f}).
+Under nested scoring the best ensemble tested scores **{best_ens_n:.3f}** vs **{best_sing_n:.3f}** for the best single learner (gap {best_ens_n - best_sing_n:+.3f}), so *'ensembles beat single models on churn ranking'* {'holds' if best_ens_n - best_sing_n > 0.02 else 'is weaker than the §10 leaderboard suggests'}."""))
+
+%%MD
+### 22.5 Register the new artifacts (traceability and manifest)
+
+%%CODE
+trace_p = L.METRICS / "traceability.csv"
+tr = pd.read_csv(trace_p)
+new_req = [
+    ("R58", "Churn label audit against the 90-day inactivity rule; excluded members quantified", "Review addendum", "§22.1", "metrics/churn_label_audit.json"),
+    ("R59", "Class balance of all three classification targets and how each is handled", "Review addendum", "§22.2", "metrics/class_balance.csv"),
+    ("R60", "Imbalance-aware ensemble re-test (class_weight / scale_pos_weight) vs the §10 leaderboard", "Review addendum", "§22.3", "metrics/imbalance_ensemble_retest.csv"),
+    ("R61", "Nested cross-validation check of selection optimism for the churn leaderboard", "Review addendum", "§22.4", "metrics/nested_cv_churn.csv"),
+    ("R62", "Dashboard: Recommendation & action plan page (pilot design, break-even rule, downloadable treatment/control list)", "Review addendum", "app.py · module O", "root:app.py"),
+]
+rows = []
+for rid, req, src_, impl, ev in new_req:
+    path = (L.ROOT / ev.split(":", 1)[1]) if ev.startswith("root:") else (L.ART / ev)
+    rows.append({"id": rid, "requirement": req, "source": src_, "implementation": impl, "evidence": ev, "status": "Complete" if path.exists() else "Missing"})
+tr = pd.concat([tr[~tr.id.isin([r["id"] for r in rows])], pd.DataFrame(rows)], ignore_index=True)
+tr.to_csv(trace_p, index=False)
+old_man = L.load_json(L.ART / "manifest.json")
+man = []
+for p in sorted(L.ART.rglob("*")):
+    if p.is_file() and p.name != "manifest.json":
+        row = {"file": str(p.relative_to(L.ART)), "bytes": p.stat().st_size, "md5": L.md5(p)}
+        if p.suffix == ".csv": row["rows"] = int(sum(1 for _ in open(p, encoding="utf-8")) - 1)
+        man.append(row)
+L.save_json({"generated_by": "notebooks/Landmark_Customer_Intelligence.ipynb", "obs_date": old_man["obs_date"], "fast_mode": old_man["fast_mode"], "files": man}, L.ART / "manifest.json")
+print(f"{len(rows)} requirements registered · manifest lists {len(man)} artifacts")

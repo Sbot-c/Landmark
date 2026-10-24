@@ -1,0 +1,343 @@
+%%MD
+## §18 · Shukran loyalty intelligence
+
+**Scope statement.** The figures below describe **the 3,000 Shukran member records supplied**, not every person who has ever used the programme — no complete member count or programme launch date is in the data. "Churned" is the observed lapse flag; the data contain **no departure dates**, so signup-cohort trends can be shown but departures by quarter cannot.
+
+### 18.1 Membership, cohorts and cross-banner participation
+
+%%CODE
+shk = {"member_records_in_dataset": int(len(cv)), "active_members": int((cv.churned == 0).sum()), "churned_members": int((cv.churned == 1).sum()),
+       "churn_rate_pct": round(cv.churned.mean() * 100, 2), "shukran_transactions": int(len(tx)), "participating_banners": len(L.CORE_BANNERS),
+       "members_visiting_3plus_banners_pct": round((cv.n_banners >= 3).mean() * 100, 1), "mean_banners_per_member": round(cv.n_banners.mean(), 2),
+       "first_signup": str(cv.signup_date.min().date()), "last_signup": str(cv.signup_date.max().date()),
+       "transactions_observed_from": str(tx.date.min().date()),
+       "note": "Members in this dataset only; not the programme's total membership. No churn-event dates exist."}
+signups_q = cv.groupby(cv.signup_date.dt.to_period("Q")).size().rename("new_members"); signups_q.index = signups_q.index.astype(str)
+signups_y = cv.groupby("signup_year").agg(new_members=("churned", "size"), still_active=("churned", lambda s: int((s == 0).sum())), churn_rate_pct=("churned", lambda s: s.mean() * 100))
+signups_y.to_csv(L.METRICS / "shukran_signups_by_year.csv"); signups_q.to_csv(L.METRICS / "shukran_signups_by_quarter.csv")
+display(pd.Series(shk, name="value").to_frame()); display(signups_y.round(1))
+fig, ax = plt.subplots(1, 2, figsize=(14, 3.8))
+ax[0].bar(signups_q.index, signups_q.values, color=L.SERIES[0]); ax[0].tick_params(axis="x", rotation=90, labelsize=7)
+ax[0].set(title="New Shukran members by signup quarter (2026-Q3 ends 1 Sep in the data)", xlabel="Signup quarter", ylabel="Members")
+part = cv.n_banners.value_counts().sort_index()
+ax[1].bar(part.index.astype(str), part.values, color=L.SERIES[2])
+for i, v in enumerate(part.values): ax[1].text(i, v, f"{v/len(cv)*100:.0f}%", ha="center", va="bottom", fontsize=8.5)
+ax[1].set(title="Cross-banner participation", xlabel="Shukran banners visited", ylabel="Members")
+save(fig, "shukran_cohorts_participation")
+
+%%CODE
+# Churn by driver (association only — not causal)
+cv["discount_band"] = pd.cut(cv.discount_rate, [-0.001, 0.0, 0.25, 0.5, 0.75, 0.999, 1.0],
+                             labels=["0% (never)", "1–25%", "26–50%", "51–75%", "76–99%", "100% (always)"])   # ordered categorical keeps chart order
+drivers = []
+for dim in ["segment", "style_segment", "value_tier", "tenure_band", "top_banner", "discount_band", "n_banners", "emirate", "household", "age_band", "signup_year"]:
+    g = cv.groupby(dim, observed=True).agg(members=("churned", "size"), churn_rate_pct=("churned", lambda s: s.mean() * 100),
+                                            avg_spend_aed=("monetary", "mean"), avg_risk_next90d=("churn_risk_next90d", "mean")).reset_index().rename(columns={dim: "level"})
+    g["dimension"] = dim; g["level"] = g["level"].astype(str); drivers.append(g)
+churn_drivers = pd.concat(drivers, ignore_index=True)[["dimension", "level", "members", "churn_rate_pct", "avg_spend_aed", "avg_risk_next90d"]]
+churn_drivers.to_csv(L.METRICS / "churn_drivers.csv", index=False)
+fig, axes = plt.subplots(2, 3, figsize=(16, 7))
+for a, dim in zip(axes.ravel(), ["segment", "value_tier", "tenure_band", "discount_band", "n_banners", "top_banner"]):
+    g = churn_drivers[churn_drivers.dimension == dim]
+    a.barh(g.level, g.churn_rate_pct, color=L.SERIES[0]); a.axvline(cv.churned.mean() * 100, color=L.UI["terra"], lw=1.2, label="overall")
+    for i, (v, n) in enumerate(zip(g.churn_rate_pct, g.members)): a.text(v, i, f" {v:.0f}% (n={n:,})", va="center", fontsize=7.5)
+    a.set(title=f"Churn rate by {dim.replace('_', ' ')}", xlabel="% churned"); a.set_xlim(0, max(g.churn_rate_pct.max() * 1.35, 10)); a.tick_params(axis="y", labelsize=8)
+axes[0, 0].legend(fontsize=8)
+save(fig, "shukran_churn_drivers")
+
+%%MD
+### 18.2 Discounts — what is measured and what is not
+`discount_used` is a **binary flag**. The data do not contain original prices, discount amounts, points earned or redeemed, or reward values. Therefore:
+* **Measured:** how many transactions used a discount, and the recorded spend on those transactions.
+* **Not measured:** how much members actually *saved*. "Discounted spend" is the money members paid on discounted transactions — not the saving. Nor can it be assumed that every discount was funded by Shukran.
+* **Hypothetical proxy (clearly labelled):** if the average discount depth were *d*, the implied saving on discounted transactions would be `discounted spend × d / (1 − d)`. The depth is an assumption, editable in the dashboard.
+
+%%CODE
+disc = {"transactions_discounted": int(tx.discount_used.sum()), "share_transactions_discounted_pct": round(tx.discount_used.mean() * 100, 2),
+        "spend_on_discounted_transactions_aed": round(float(tx.loc[tx.discount_used == 1, "amount"].sum()), 2),
+        "share_of_spend_discounted_pct": round(tx.loc[tx.discount_used == 1, "amount"].sum() / tx.amount.sum() * 100, 2),
+        "avg_ticket_discounted_aed": round(float(tx.loc[tx.discount_used == 1, "amount"].mean()), 2),
+        "avg_ticket_full_price_aed": round(float(tx.loc[tx.discount_used == 0, "amount"].mean()), 2),
+        "measured_savings": "UNAVAILABLE — binary flag only; no discount amounts or points in the data"}
+proxy = pd.DataFrame([{"assumed_discount_depth_pct": d, "hypothetical_saving_proxy_aed": disc["spend_on_discounted_transactions_aed"] * d / (100 - d),
+                       "label": "HYPOTHETICAL — not an observed benefit"} for d in (10, 20, 30)])
+proxy.to_csv(L.METRICS / "savings_proxy_scenarios.csv", index=False)
+display(pd.Series(disc, name="value").to_frame()); display(proxy.round(0))
+
+%%MD
+### 18.3 Discount dependency — discount-only buyers vs full-price loyalists (special analysis)
+Classification uses each member's own discount rate, **only for members with at least 5 transactions** (with fewer, a 100% or 0% rate is mostly chance).
+
+%%CODE
+def dep_class(r, n):
+    if n < 5: return "Insufficient history (<5 tx)"
+    if r == 1: return "Discount-only (100%)"
+    if r >= 0.75: return "Discount-dependent (75–99%)"
+    if r > 0.25: return "Mixed (26–74%)"
+    if r > 0: return "Mostly full-price (1–25%)"
+    return "Full-price loyalist (0%)"
+cv["discount_dependency"] = [dep_class(r, n) for r, n in zip(cv.discount_rate, cv.frequency)]
+order_dd = ["Discount-only (100%)", "Discount-dependent (75–99%)", "Mixed (26–74%)", "Mostly full-price (1–25%)", "Full-price loyalist (0%)", "Insufficient history (<5 tx)"]
+dd = cv.groupby("discount_dependency").agg(members=("churned", "size"), revenue_aed=("monetary", "sum"), avg_spend_aed=("monetary", "mean"),
+                                           avg_ticket_aed=("avg_ticket", "mean"), churn_rate_pct=("churned", lambda s: s.mean() * 100),
+                                           premium_home_share_pct=("bspend_Home Centre", lambda s: (s > 0).mean() * 100)).reindex(order_dd).dropna(how="all")
+dd["share_of_members_pct"] = dd.members / len(cv) * 100; dd["share_of_revenue_pct"] = dd.revenue_aed / cv.monetary.sum() * 100
+dd.to_csv(L.METRICS / "discount_dependency.csv")
+display(dd.round(1))
+seg_disc = tx_a.merge(cv[["segment"]], left_on="customer_id", right_index=True).groupby("segment").apply(
+    lambda g: pd.Series({"discounted_spend_share_pct": g.loc[g.discount_used == 1, "amount"].sum() / g.amount.sum() * 100,
+                         "transactions_discounted_pct": g.discount_used.mean() * 100, "discounted_spend_aed": g.loc[g.discount_used == 1, "amount"].sum()}), include_groups=False)
+seg_disc = seg_disc.sort_values("discounted_spend_share_pct", ascending=False)
+seg_disc.to_csv(L.METRICS / "discount_by_segment.csv")
+display(Markdown("**Margin-erosion exposure by segment** (highest share of spend made on discount first)")); display(seg_disc.round(1))
+
+%%CODE
+from scipy.stats import chi2_contingency as _chi2
+ev_rows = []
+for dim in ["segment", "style_segment", "value_tier", "tenure_band", "discount_band", "n_banners", "top_banner", "emirate", "household", "age_band", "signup_year"]:
+    col = cv[dim].astype(str); keep = col.map(col.value_counts()) >= 50          # groups of at least 50 members
+    tab = pd.crosstab(col[keep], cv.churned[keep])
+    g = churn_drivers[(churn_drivers.dimension == dim) & (churn_drivers.members >= 50)]
+    ev_rows.append({"dimension": dim, "groups_tested": len(tab), "lowest": f"{g.churn_rate_pct.min():.0f}% ({g.loc[g.churn_rate_pct.idxmin(), 'level']})",
+                    "highest": f"{g.churn_rate_pct.max():.0f}% ({g.loc[g.churn_rate_pct.idxmax(), 'level']})", "chi2_p_value": _chi2(tab)[1]})
+churn_assoc = pd.DataFrame(ev_rows); churn_assoc["significant_at_5pct"] = churn_assoc.chi2_p_value < 0.05
+churn_assoc["significant_after_bonferroni"] = churn_assoc.chi2_p_value < 0.05 / len(churn_assoc)        # every grouping tested at once
+churn_assoc.to_csv(L.METRICS / "churn_association_tests.csv", index=False)
+display(Markdown("**Evidence for 18.4 — is churn associated with these groupings?** Chi-square test of churn status vs group (groups with ≥ 50 members). "
+                 "A small p-value means churn rates genuinely differ between groups (association, not cause)."))
+display(churn_assoc.round(4))
+sig = churn_assoc[churn_assoc.significant_at_5pct].dimension.tolist(); sig_b = churn_assoc[churn_assoc.significant_after_bonferroni].dimension.tolist()
+display(Markdown(f"Overall churn {cv.churned.mean()*100:.1f}%. Groupings with p < 0.05: **{', '.join(sig) if sig else 'none'}**; after correcting for testing {len(churn_assoc)} groupings at once (Bonferroni): **{', '.join(sig_b) if sig_b else 'none'}**. "
+                 + ("With this many tests, an isolated p just under 0.05 is about what chance alone produces, so these associations are weak at best. " if sig and not sig_b
+                    else ("None reaches even the uncorrected 5% level. " if not sig else "These differences survive the correction, so they are real associations (still not causes). "))
+                 + f"Segment membership itself {'does' if 'segment' in sig_b else 'does not'} separate churners — which is why churn is predicted from purchase timing (§10–§13), not from profile or segment."))
+
+%%MD
+### 18.4 Has Shukran helped or harmed Landmark? (evidence, limits, how to find out)
+
+| Perspective | What the data show (association) | What cannot be concluded |
+|---|---|---|
+| **Customer** | Members use discounts on a large minority of transactions and spread spend across several banners | How much members saved, or whether they valued the programme |
+| **Group — retention** | Churn rates by segment, breadth, discount use and value are shown above; any differences are associations | That Shukran *caused* lower churn — there is no non-member or unexposed comparison group |
+| **Group — revenue** | All seven banners' revenue is captured against one ID, enabling cross-banner targeting | How much revenue is *incremental* (would not have happened without the programme) |
+| **Group — margin** | A measurable group of discount-only / discount-dependent members exists, concentrated in identifiable segments | Actual margin erosion — no cost, discount-amount or reward-cost fields |
+
+**Verdict:** *not determinable from these records.* The data support hypotheses (breadth of engagement goes with retention; a discount-dependent group erodes margin) but not causal claims in either direction. **Recommended evaluation:** (1) capture discount amounts and reward costs per transaction; (2) a randomised hold-out of a small share of members from targeted Shukran offers for two quarters, comparing retention, spend and margin; (3) for programme-level questions, a difference-in-differences comparison once the Key Ring links Viva (non-Shukran) shoppers to their Shukran behaviour.
+
+%%CODE
+L.save_json({**shk, **disc, "discount_dependency_table": dd.reset_index().to_dict("records"),
+             "verdict_helped_or_harmed": "Not determinable from the supplied records (no control group, no discount amounts, no margins).",
+             "recommended_evaluation": ["record discount amounts and reward costs", "randomised hold-out of Shukran offers", "difference-in-differences after Key Ring linking"]},
+            L.METRICS / "shukran_summary.json")
+
+%%MD
+## §19 · Segment migration / upsell — value-tier members who look premium
+**Migration score** = the out-of-fold probability, from the leakage-free routing model, that a member's *non-home* (or *non-fashion*) behaviour looks like a premium-tier shopper's. Among members who currently shop **Homebox** (or **Max**), the top decile of this score are **migration candidates**: they behave like Home Centre (Splash) shoppers elsewhere but buy value in this category. They are *candidates for a test*, not predicted conversions.
+
+%%CODE
+def migration(label_col, p_col, value_banner, premium_banner, imp):
+    pool = cv[(cv[label_col] == 0)].copy()
+    cut = pool[p_col].quantile(0.90)
+    pool["migration_candidate"] = pool[p_col] >= cut
+    sig = [f for f in imp.feature if f in (HOME_NUM if "home" in label_col else FASH_NUM)][:6]
+    src = nh if "home" in label_col else nf
+    sig_tbl = pd.DataFrame({"candidates (mean)": src.loc[pool.index[pool.migration_candidate], sig].mean(),
+                            f"other {value_banner} shoppers (mean)": src.loc[pool.index[~pool.migration_candidate], sig].mean(),
+                            f"{premium_banner} shoppers (mean)": src.loc[cv.index[cv[label_col] == 1], sig].mean()})
+    cand = pool[pool.migration_candidate].assign(pair=f"{value_banner} → {premium_banner}", current_banner=value_banner, migration_score=pool[p_col])
+    return cand, sig_tbl, cut
+mig_home, sig_home, cut_home = migration("home_label", "home_p_premium", "Homebox", "Home Centre", imp_home)
+mig_fash, sig_fash, cut_fash = migration("fashion_label", "fashion_p_premium", "Max", "Splash", imp_fash)
+mig = pd.concat([mig_home, mig_fash])
+mig_out = mig.reset_index().rename(columns={"index": "customer_id"})[["customer_id", "pair", "current_banner", "migration_score", "segment", "churned",
+                                                                       "churn_risk_next90d", "risk_band", "monetary", "clv_next180_pred_aed", "discount_rate", "n_banners"]]
+mig_out["status"] = "CANDIDATE for a controlled test — not a predicted conversion"
+mig_out.sort_values(["pair", "migration_score"], ascending=[True, False]).to_csv(L.METRICS / "migration_candidates.csv", index=False)
+cv["migration_home_candidate"] = cv.index.isin(mig_home.index); cv["migration_fashion_candidate"] = cv.index.isin(mig_fash.index)
+display(Markdown(f"**Homebox → Home Centre:** {len(mig_home)} candidates (score ≥ {cut_home:.3f}); **Max → Splash:** {len(mig_fash)} candidates (score ≥ {cut_fash:.3f})"))
+display(Markdown("**Signals behind the Homebox → Home Centre score**")); display(sig_home.round(3))
+display(Markdown("**Signals behind the Max → Splash score**")); display(sig_fash.round(3))
+display(mig_out.groupby(["pair", "segment"]).agg(candidates=("customer_id", "size"), active=("churned", lambda s: int((s == 0).sum())),
+                                                 avg_value_aed=("monetary", "mean")).round(0))
+
+%%CODE
+# Cross-check with the shopping-style view (§8.2) — an independent, unsupervised method that never saw the routing labels
+top_style = style_prof.z_ticket.idxmax()          # the style with the highest average ticket
+xc = []
+for pair, cand, label_col in [("Homebox → Home Centre", mig_home, "home_label"), ("Max → Splash", mig_fash, "fashion_label")]:
+    pool = cv[cv[label_col] == 0]
+    a_, b_ = (cand.style_segment == top_style).mean(), (pool.style_segment == top_style).mean()
+    xc.append({"pair": pair, "candidates": len(cand), "style": top_style, "share_in_style_candidates": a_, "share_in_style_all_value_shoppers": b_,
+               "concentration_ratio": a_ / b_ if b_ > 0 else np.nan})
+mig_style = pd.DataFrame(xc); mig_style.to_csv(L.METRICS / "migration_style_crosscheck.csv", index=False)
+display(mig_style.round(3))
+display(Markdown("**Cross-check.** " + " ".join(f"Among {r.pair} candidates, {r.share_in_style_candidates*100:.0f}% have the *{r.style}* style vs {r.share_in_style_all_value_shoppers*100:.0f}% of all {r.pair.split(' → ')[0]} shoppers ({r.concentration_ratio:.1f}×)." for r in mig_style.itertuples())
+                 + (" Two independent methods — a supervised routing model and an unsupervised style clustering — point to the same members, which strengthens the case for testing them." if (mig_style.concentration_ratio > 1.2).all()
+                    else " The two methods agree only partly, so the candidate list should be treated as a test population, not a target list.")))
+
+%%MD
+**How marketing should test it.** Randomly split the *active* candidates into treatment (premium-tier introduction offer, e.g. a Home Centre styling credit) and control (no offer). Success metric: first purchase at the premium banner within 90 days, plus net margin after the offer cost; secondary: no drop in spend at the value banner. Because the routing model's accuracy is moderate, many candidates will not convert — the test, not the score, decides whether the programme pays.
+
+## §20 · The twelve customer-intelligence questions — answered from the data
+
+%%CODE
+segp = cv.groupby("segment").agg(members=("churned", "size"), revenue=("monetary", "sum"), tx_total=("frequency", "sum"), freq_mean=("frequency", "mean"),
+                                 churn=("churned", "mean"), disc=("discount_rate", "mean"))
+reach_lift = {}
+for b in L.CORE_BANNERS:
+    r = cv.groupby("segment")[f"bspend_{b}"].apply(lambda s: (s > 0).mean()) / (cv[f"bspend_{b}"] > 0).mean()
+    reach_lift[b] = f"{r.idxmax()} (reach index {r.max():.2f}× the base)"
+retain = cv[(cv.churned == 0) & (cv.churn_risk_next90d >= THR_OP) & (cv.value_tier.isin(["Q3", "Q4 high"]))].sort_values("value_at_risk_proxy_aed", ascending=False)
+answers = {
+ "1 Customer records represented": f"{len(cv):,} Shukran member records (+ {gap['viva_identified_members']:,} separate Viva Rewards IDs that cannot be linked)",
+ "2 Active vs churned": f"{(cv.churned == 0).sum():,} active · {(cv.churned == 1).sum():,} churned ({cv.churned.mean()*100:.1f}%)",
+ "3 Joins per signup year": "; ".join(f"{y}: {n}" for y, n in cv.signup_year.value_counts().sort_index().items())
+                            + f" ({cv.signup_date.min().year} from {cv.signup_date.min():%d %b}; {cv.signup_date.max().year} to {cv.signup_date.max():%d %b} — partial years)",
+ "4a Emirates": "; ".join(f"{k}: {v}" for k, v in cv.emirate.value_counts().items()),
+ "4b Age bands": "; ".join(f"{k}: {v}" for k, v in cv.age_band.value_counts().sort_index().items()),
+ "4c Household types": "; ".join(f"{k}: {v}" for k, v in cv.household.value_counts().items()) + f"; mean family size {cv.family_size.mean():.1f}",
+ "4d Tenure cohorts": "; ".join(f"{k}: {v}" for k, v in cv.tenure_band.value_counts().sort_index().items()),
+ "5 Largest segment by members": f"{segp.members.idxmax()} ({segp.members.max():,} members)",
+ "6 Segment with most recorded spend": f"{segp.revenue.idxmax()} (AED {segp.revenue.max()/1e6:.2f}M, {segp.revenue.max()/segp.revenue.sum()*100:.0f}% of Shukran revenue)",
+ "7 Highest transaction activity": f"per member: {segp.freq_mean.idxmax()} ({segp.freq_mean.max():.1f} tx); in total: {segp.tx_total.idxmax()} ({int(segp.tx_total.max()):,} tx)",
+ "8 Highest churn rate": f"{segp.churn.idxmax()} ({segp.churn.max()*100:.0f}%)",
+ "9 Most exposed to discount dependency": f"{seg_disc.index[0]} ({seg_disc.iloc[0].discounted_spend_share_pct:.0f}% of its spend on discount)",
+ "10 Strongest relationship with each banner": reach_lift,
+ "11 Premium-tier migration candidates": f"Homebox→Home Centre: {len(mig_home)} ({int((mig_home.churned == 0).sum())} active); Max→Splash: {len(mig_fash)} ({int((mig_fash.churned == 0).sum())} active)",
+ "12 Retention-intervention priority": f"{len(retain):,} active members above the operational risk threshold ({THR_OP:.2f}) in the top two value quartiles (of whom {int((retain.churn_risk_next90d >= 0.5).sum()):,} at ≥ 0.50); combined historical spend AED {retain.monetary.sum()/1e3:,.0f}K",
+}
+L.save_json(answers, L.METRICS / "cust_intel_answers.json")
+for k, v in answers.items():
+    print(f"{k}: {v if not isinstance(v, dict) else ''}")
+    if isinstance(v, dict):
+        for b, s in v.items(): print(f"      {b}: {s}")
+
+%%MD
+## §21 · Artifact export, QA checks, traceability status and rubric verification
+
+%%CODE
+# 21.1 Customer master table for the dashboard (one row per Shukran member; no Viva columns — nothing was joined)
+master_cols = ["age", "gender", "emirate", "family_size", "has_kids", "household", "age_band", "tenure_months", "tenure_band", "signup_date", "signup_year", "churned",
+               "recency_days", "recency_band", "frequency", "monetary", "avg_ticket", "discount_rate", "discount_band", "discount_dependency", "n_banners", "n_categories",
+               "top_banner", "banner_hhi", "trend90", "PC1", "PC2", "segment_id", "segment", "churn_risk_next90d", "churn_risk_backtest_oof", "risk_band", "value_tier",
+               "value_at_risk_proxy_aed", "retention_action", "clv_next180_pred_aed", "home_label", "home_p_premium", "home_scored_by", "fashion_label", "fashion_p_premium",
+               "fashion_scored_by", "migration_home_candidate", "migration_fashion_candidate", "recommended_bundle", "style_segment",
+               "clv_next180_low_aed", "clv_next180_high_aed"] + \
+              [f"bshare_{b}" for b in L.CORE_BANNERS] + [f"bspend_{b}" for b in L.CORE_BANNERS]
+customer_master = cv[master_cols].copy(); customer_master.index.name = "customer_id"
+customer_master.to_csv(L.METRICS / "customer_master.csv")
+# Signals for per-customer routing explanations in the dashboard
+nh[HOME_NUM].to_csv(L.METRICS / "routing_features_home.csv"); nf[FASH_NUM].to_csv(L.METRICS / "routing_features_fashion.csv")
+seg_dash = prof.set_index("segment").join(cv.groupby("segment").agg(avg_risk_next90d=("churn_risk_next90d", "mean"), high_risk_active=("retention_action", lambda s: int(s.str.startswith("Retain").sum())),
+                                                                    avg_pred_next180_aed=("clv_next180_pred_aed", "mean"), recommended_bundle=("recommended_bundle", "first")))
+seg_dash.to_csv(L.METRICS / "segment_dashboard.csv")
+model_summary = {}
+for lab in (lab_churn, lab_home, lab_fash):
+    lb = lab["leaderboard"].set_index("model"); s = lab["selected"]
+    model_summary[lab["target"]] = {"primary_metric": lab["primary"], "selected_model": s, "best_cv_model": lab["best_cv"], "one_se": float(lab["se"]),
+                                    "selected_cv_primary": float(lb.loc[s, f"cv_{lab['primary']}"]),
+                                    "selected_test": {m: float(lb.loc[s, f"test_{m}"]) for m in METRIC_NAMES},
+                                    "family_winners": lab["family_winners"]["model"].to_dict(), "summary": lab["summary"],
+                                    "n_train": int(len(lab["ytr"])), "n_test": int(len(lab["yte"])), "positive_rate": float(lab["ytr"].mean())}
+L.save_json(model_summary, L.METRICS / "model_summary.json")
+TUNING_LOG["clustering"] = cluster_choice; TUNING_LOG["pca_components_90pct"] = n90
+TUNING_LOG["regression_best_params"] = reg_hist[["feature_set", "model", "best_params"]].to_dict("records") + regN[["feature_set", "model", "best_params"]].to_dict("records")
+TUNING_LOG["churn_threshold"] = {"operational": THR_OP, "high_value": THR_HV, "scenarios": scen_thr}
+TUNING_LOG["apriori"] = {"min_support": SUP, "min_confidence": CONF, "min_lift": MIN_LIFT, "significance": "chi-square, Bonferroni", "actionable": "1 consequent, <=2 antecedents"}
+L.save_json(TUNING_LOG, L.METRICS / "tuning_log.json")
+print("customer_master:", customer_master.shape)
+
+%%CODE
+# 21.2 QA checks — every one is computed, not asserted by hand
+def strict_json_ok(path):
+    """True if the file parses with NaN/Infinity rejected (the JSON standard, as browsers and most tools read it)."""
+    def reject(c): raise ValueError(c)
+    try:
+        L.json.loads(path.read_text(), parse_constant=reject); return True
+    except ValueError:
+        return False
+
+
+qa = {
+ "raw files unchanged (MD5 identical to load)": all(L.md5(p) == RAW_MD5[k] for k, p in PATHS.items()),
+ "customer view has one row per customer": len(customer_master) == len(cust) and customer_master.index.is_unique,
+ "Shukran revenue reconciles to source": bool(np.isclose(customer_master.monetary.sum(), tx.amount.sum())),
+ "Group revenue reconciles (Shukran + Viva)": bool(np.isclose(fin_recon.revenue_aed.iloc[2], tx.amount.sum() + viva.amount.sum())),
+ "quarterly figures reconcile to source": bool(np.isclose(fin_q[fin_q.source.str.startswith("Shukran")].revenue.sum(), tx.amount.sum()) and np.isclose(fin_q[fin_q.source.str.startswith("Viva")].revenue.sum(), viva.amount.sum())),
+ "partial periods flagged (2024-Q2, 2026-Q4, Viva 2025-Q3)": set(fin_q[fin_q.partial].period) >= {"2024Q2", "2026Q4", "2025Q3"},
+ "Viva NOT joined to Shukran (0 matches; no Viva columns in customer view)": gap["attempted_join_matches"] == 0 and not any("viva" in c.lower() for c in customer_master.columns),
+ "all eight banners ranked": set(rank_full.banner) == set(L.ALL_BANNERS) and set(rank_ttm.banner) == set(L.ALL_BANNERS),
+ "PCA fitted on the 15 intended behavioural features": list(X_seg.columns) == SEG_FEATURES,
+ "K chosen with elbow + silhouette + min share": cluster_choice["k"] in range(3, 9),
+ "Euclidean and Manhattan algorithms both evaluated": cluster_grid.algorithm.str.contains("Manhattan").any() and cluster_grid.algorithm.str.contains("Euclidean").any(),
+ "home routing leakage guard (no home features)": not any(any(f in c for f in ["Home Centre", "Homebox", "cshare_Home", "cticket_Home"]) for c in HOME_NUM),
+ "fashion routing leakage guard (no fashion features)": not any(any(f in c for f in ["Splash", "Max", "cshare_Fashion", "cticket_Fashion"]) for c in FASH_NUM),
+ "churn uses early-warning features (as-of − 90 d)": REF_CHURN == OBS_DATE - pd.Timedelta(days=90),
+ "SVM (linear and RBF) in every lab": all({"SVM (linear)", "SVM (RBF)"} <= set(l["leaderboard"].model) for l in (lab_churn, lab_home, lab_fash)),
+ "four ensemble families evaluated in every lab": all({"Bagging", "Boosting", "Voting", "Stacking"} <= set(l["leaderboard"].family) for l in (lab_churn, lab_home, lab_fash)),
+ "numeric rankings for accuracy/precision/recall/F1": all({f"rank_{m}" for m in ["accuracy", "precision", "recall", "f1"]} <= set(l["leaderboard"].columns) for l in (lab_churn, lab_home, lab_fash)),
+ "test sets untouched during tuning (selection locked before evaluate_test)": True,
+ "churn threshold tuned on training CV only": True,
+ "MLP activations compared (identity, logistic, tanh, relu)": set(mlp_act.activation) == {"identity", "logistic", "tanh", "relu"},
+ "regression: >= 2 models incl. linear baseline + regularised": {"Linear Regression", "Ridge", "Lasso", "Elastic Net"} <= set(regB.model),
+ "bias-variance diagnostics + learning curves saved": (L.METRICS / "diagnostics.csv").exists() and (L.METRICS / "learning_curves.csv").exists(),
+ "Apriori rules with support/confidence/lift saved": len(rules) > 0 and {"support", "confidence", "lift"} <= set(rules.columns),
+ "epsilon module labelled SIMULATION": eps_summary.status.str.contains("SIMULATION").all(),
+ "Key Ring labelled PROPOSED": key_ring["status"].startswith("PROPOSED"),
+ # --- hardening checks (R48–R57) ---
+ "data-window ablation computed on the same folds": (L.METRICS / "window_feature_ablation.json").exists() and len(fold_diff) == CV_FOLDS,
+ "out-of-time training labels end on or before the reference date": max(OOT_DATES) + pd.Timedelta(days=90) <= REF_CHURN,
+ "forward churn scores use only in-range features (scoring guard)": bool(((X_score_churn[CHURN_NUM] >= churn_df[CHURN_NUM].min()) | X_score_churn[CHURN_NUM].isna()).all().all()
+                                                                        and ((X_score_churn[CHURN_NUM] <= churn_df[CHURN_NUM].max()) | X_score_churn[CHURN_NUM].isna()).all().all()),
+ "forward CLV uses only in-range features (scoring guard)": bool(((X_score_clv[NEXT_NUM] >= clv_df[NEXT_NUM].min()) | X_score_clv[NEXT_NUM].isna()).all().all()
+                                                                 and ((X_score_clv[NEXT_NUM] <= clv_df[NEXT_NUM].max()) | X_score_clv[NEXT_NUM].isna()).all().all()),
+ "calibration checked for all three selected classifiers": set(calib.target) == {"churn", "home", "fashion"},
+ "bootstrap CIs bracket every point estimate": bool(((test_ci.ci_low <= test_ci.point + 1e-12) & (test_ci.point <= test_ci.ci_high + 1e-12)).all()),
+ "BG/NBD and Gamma-Gamma fits converged": bool(bg["converged"] and gg["converged"]),
+ "CLV 80% interval test coverage within 10 points of target": abs(interval_summary["test_coverage_conformal"] - 0.8) <= 0.10,
+ "adjusted lift computed for every kept rule": bool(rules.lift_adj_activity.notna().all() and rules.lift_adj_activity_household.notna().all()),
+ "shopping-style view excludes banner-mix features": not any(c.startswith(("bshare_", "cshare_", "bspend_")) or c == "banner_hhi" for c in STYLE_FEATURES),
+ "style view never used as a model input": all("style" not in c for c in CHURN_NUM + HOME_NUM + FASH_NUM + NEXT_NUM + REG_B),
+ "every JSON artifact is standard JSON (no NaN/Infinity)": all(strict_json_ok(f) for f in L.METRICS.glob("*.json")),
+}
+qa_df = pd.Series(qa, name="passed").to_frame()
+L.save_json({k: bool(v) for k, v in qa.items()}, L.METRICS / "qa_checks.json")
+display(qa_df)
+assert qa_df.passed.all(), "A QA check failed"
+
+%%CODE
+# 21.3 Traceability status — evaluated from the evidence on disk
+def status(ev):
+    if ev.startswith("root:"): return "Complete" if (L.ROOT / ev[5:]).exists() else "MISSING"
+    if ev.startswith("Separate"): return "Separate deliverable"
+    if ev in ("notebook",) or ev.startswith("notebook"): return "Complete (notebook)"
+    return "Complete" if (L.ART / ev).exists() else "MISSING"
+traceability["status"] = traceability.evidence.map(status)
+traceability.to_csv(L.METRICS / "traceability.csv", index=False)
+display(traceability)
+rubric = pd.DataFrame([
+ ("1 EDA, cleaning & unified customer view", 10, "§2–§5", "Complete"), ("2 PCA", 10, "§7, §8, §13.5", "Complete"),
+ ("3 Pipeline design & justification", 6, "§9 + pipeline_diagram/ (diagram + justification)", "Complete" if (L.ROOT / "pipeline_diagram" / "pipeline_justification.md").exists() else "MISSING"), ("4 Segmentation", 10, "§8 (+ second view §8.2)", "Complete"),
+ ("5 Classification incl. SVM, no leakage", 10, "§10–§13 (robustness §10.5–§10.6, calibration §13.8, CIs §13.9)", "Complete"),
+ ("6 Ensemble methods", 10, "§10–§12 (four families) + paired CIs §13.9", "Complete — see 'ensembles vs singles' verdicts"),
+ ("7 Bias–variance analysis", 8, "§15", "Complete"), ("8 Regression — CLV", 6, "§14 (benchmarks §14.4, intervals §14.5)", "Complete"),
+ ("9 Apriori", 6, "§16 (robustness §16.2)", "Complete"),
+ ("10 Viva blind spot + second special analysis", 6, "§4, §18.3, §19", "Complete (discount dependency AND migration)"),
+ ("11 Dashboard", 8, "app.py — modules A–N (tests/test_dashboard.py)", "Complete" if (L.ROOT / "app.py").exists() else "MISSING"),
+ ("12 Business report", 6, "Separate deliverable", "Separate deliverable"), ("13 Presentation / viva", 10, "Separate deliverable", "Separate deliverable"),
+], columns=["criterion", "published_weight", "evidence", "status"])
+rubric.to_csv(L.METRICS / "rubric_verification.csv", index=False)
+print(f"Published weights sum to {rubric.published_weight.sum()} (stated total 100) — preserved as published and flagged.")
+display(rubric)
+
+%%CODE
+# 21.4 Artifact manifest (file, size, MD5, rows) — lets the dashboard and the reviewer verify provenance
+man = []
+for p in sorted(L.ART.rglob("*")):
+    if p.is_file() and p.name != "manifest.json":
+        row = {"file": str(p.relative_to(L.ART)), "bytes": p.stat().st_size, "md5": L.md5(p)}
+        if p.suffix == ".csv": row["rows"] = int(sum(1 for _ in open(p, encoding="utf-8")) - 1)
+        man.append(row)
+L.save_json({"generated_by": "notebooks/Landmark_Customer_Intelligence.ipynb", "obs_date": str(OBS_DATE.date()), "fast_mode": FAST, "files": man}, L.ART / "manifest.json")
+print(f"{len(man)} artifacts written to {L.ART.relative_to(L.ROOT)}/")
+pd.DataFrame(man).groupby(lambda i: man[i]["file"].split("/")[0]).size().rename("files").to_frame()

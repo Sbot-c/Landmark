@@ -1,0 +1,204 @@
+%%MD
+## §6 · Group financials and eight-banner performance
+**Definition used throughout.** *Recorded revenue* = sum of the observed `amount` values in the supplied transaction files. It is **not** an audited financial statement, and because the files cover a sample of 3,000 Shukran members (plus Viva baskets), it is **not Landmark Group's actual revenue**. Periods are **calendar** quarters and years (no fiscal-year definition was supplied).
+
+### 6.1 Reconciliation and coverage
+
+%%CODE
+allx = L.combined_transactions(tx, viva)     # group-level stacking only — never a customer-level join
+fin_recon = pd.DataFrame({
+    "source": ["Shukran (7 banners)", "Viva (separate IDs)", "Total recorded"],
+    "rows": [len(tx), len(viva), len(allx)],
+    "revenue_aed": [tx.amount.sum(), viva.amount.sum(), allx.amount.sum()],
+    "first_date": [tx.date.min().date(), viva.date.min().date(), allx.date.min().date()],
+    "last_date": [tx.date.max().date(), viva.date.max().date(), allx.date.max().date()],
+})
+assert np.isclose(fin_recon.revenue_aed[0] + fin_recon.revenue_aed[1], fin_recon.revenue_aed[2])
+assert fin_recon.rows[0] + fin_recon.rows[1] == fin_recon.rows[2]
+fin_recon.round(2)
+
+%%CODE
+# Quarterly recorded revenue per source with partial-period flags (coverage computed from each source's own dates)
+q_core = L.period_coverage(tx).assign(source="Shukran (7 banners)")
+q_viva = L.period_coverage(viva).assign(source="Viva (separate IDs)")
+q_core["active_customers"] = tx.groupby(tx.date.dt.to_period("Q")).customer_id.nunique().values
+fin_q = pd.concat([q_core, q_viva], ignore_index=True)
+# growth only between COMPLETE quarters of the same source
+fin_q = fin_q.sort_values(["source", "period"])
+fin_q["qoq_growth_pct"] = np.where(~fin_q.partial & ~fin_q.groupby("source").partial.shift(1, fill_value=True),
+                                   fin_q.groupby("source").revenue.pct_change() * 100, np.nan)
+fin_q["yoy_same_quarter_pct"] = np.nan
+for src, g in fin_q.groupby("source"):
+    rev = g.set_index("period").revenue; part = g.set_index("period").partial
+    for p in rev.index:
+        prev = str(pd.Period(p) - 4)
+        if prev in rev.index and not part[p] and not part[prev]:
+            fin_q.loc[(fin_q.source == src) & (fin_q.period == p), "yoy_same_quarter_pct"] = (rev[p] / rev[prev] - 1) * 100
+fin_q.to_csv(L.METRICS / "fin_quarterly.csv", index=False)
+fin_q[["source", "period", "revenue", "transactions", "avg_ticket", "active_customers", "coverage_pct", "partial", "qoq_growth_pct", "yoy_same_quarter_pct"]].round(1)
+
+%%CODE
+# Annual (calendar-year) recorded revenue with explicit coverage; like-for-like comparisons
+yr = allx.groupby([allx.date.dt.year.rename("year"), "source"]).agg(revenue=("amount", "sum"), transactions=("amount", "size")).reset_index()
+cov = allx.groupby([allx.date.dt.year.rename("year"), "source"]).date.agg(["min", "max"]).reset_index()
+yr = yr.merge(cov, on=["year", "source"])
+yr["coverage"] = yr["min"].dt.strftime("%d %b") + " – " + yr["max"].dt.strftime("%d %b %Y")
+yr["complete_year"] = (yr["min"].dt.strftime("%m-%d") == "01-01") & (yr["max"].dt.strftime("%m-%d") == "12-31")
+yr = yr.drop(columns=["min", "max"]); yr.to_csv(L.METRICS / "fin_annual.csv", index=False)
+display(yr.round(2))
+
+def window_rev(df, a, b):
+    return float(df[(df.date >= a) & (df.date <= b)].amount.sum())
+lfl = pd.DataFrame([
+    {"comparison": "Shukran YTD Q1–Q3", "base_period": "2025-01-01 → 2025-09-30", "base_aed": window_rev(tx, "2025-01-01", "2025-09-30"),
+     "current_period": "2026-01-01 → 2026-09-30", "current_aed": window_rev(tx, "2026-01-01", "2026-09-30")},
+    {"comparison": "Shukran Q3 vs Q3", "base_period": "2025-Q3", "base_aed": window_rev(tx, "2025-07-01", "2025-09-30"),
+     "current_period": "2026-Q3", "current_aed": window_rev(tx, "2026-07-01", "2026-09-30")},
+    {"comparison": "Viva Q4-2025 vs Q3-2026 (only complete Viva quarters available)", "base_period": "2025-Q4", "base_aed": window_rev(viva, "2025-10-01", "2025-12-31"),
+     "current_period": "2026-Q3", "current_aed": window_rev(viva, "2026-07-01", "2026-09-30")},
+])
+lfl["change_pct"] = (lfl.current_aed / lfl.base_aed - 1) * 100
+lfl.to_csv(L.METRICS / "fin_like_for_like.csv", index=False)
+lfl.round(1)
+
+%%CODE
+fig, ax = plt.subplots(1, 2, figsize=(14, 4.2))
+q_order = sorted(fin_q.period.unique()); qpos = {q: i for i, q in enumerate(q_order)}       # one chronological axis for both sources
+for src, col, mk in [("Shukran (7 banners)", L.SERIES[0], "o"), ("Viva (separate IDs)", BC["Viva"], "s")]:
+    g = fin_q[fin_q.source == src]
+    full = g[~g.partial]
+    ax[0].plot(full.period.map(qpos), full.revenue, marker=mk, color=col, lw=2, label=f"{src} — complete quarters")
+    pp = g[g.partial]
+    ax[0].scatter(pp.period.map(qpos), pp.revenue, marker=mk, facecolor="white", edgecolor=col, s=45, zorder=3, label=f"{src} — partial quarter")
+ax[0].set_xticks(range(len(q_order)), q_order)
+ax[0].yaxis.set_major_formatter(AED); ax[0].tick_params(axis="x", rotation=45)
+ax[0].set(title="Quarterly recorded revenue (hollow = partial quarter)", xlabel="Calendar quarter", ylabel="AED"); ax[0].legend(fontsize=7.5)
+g = q_core[~q_core.partial]
+ax[1].plot(g.period, g.avg_ticket, marker="o", color=L.SERIES[0], lw=2, label="Average ticket (AED)")
+ax[1].set(title="Shukran: average ticket per complete quarter", xlabel="Calendar quarter", ylabel="AED per transaction"); ax[1].tick_params(axis="x", rotation=45)
+ax[1].set_ylim(0, g.avg_ticket.max() * 1.2)
+save(fig, "fin_quarterly_revenue")
+
+%%MD
+**Reading the growth correctly.** Recorded Shukran revenue rises strongly across complete quarters, and the number of distinct active members per quarter rises with it. Because the file is a fixed sample of 3,000 members whose signups run to September 2026, part of this growth is *more sample members becoming active over time*, not like-for-like growth of the Group. Average ticket is broadly stable, so the growth is volume-driven. Q2-2024 (from 15 April), Viva's Q3-2025 (from 28 August) and Q4-2026 (one day) are partial and are never used in growth rates.
+
+### 6.2 Ranking all eight banners
+
+Ranks use `method="min"` (ties share the better rank). Two windows are reported because Viva's data start 16 months later than the Shukran banners: the **full available period** (each banner's own coverage) and a **like-for-like trailing four complete quarters** (2025-Q4 to 2026-Q3) in which every banner, Viva included, has complete data.
+
+%%CODE
+rank_full = L.banner_ranking(tx, viva)
+rank_ttm = L.banner_ranking(tx, viva, "2025-10-01", "2026-09-30")
+rank_full.to_csv(L.METRICS / "banner_ranking_full.csv", index=False)
+rank_ttm.to_csv(L.METRICS / "banner_ranking_ttm.csv", index=False)
+cols = ["banner", "positioning", "revenue_aed", "rank_revenue", "transactions", "rank_transactions", "avg_ticket_aed", "rank_avg_ticket", "revenue_share_pct", "reach", "reach_basis", "discount_rate"]
+display(Markdown("**Full available period** (Shukran banners 2024-04-15 → 2026-10-01; Viva 2025-08-28 → 2026-10-01)")); display(rank_full[cols].round(2))
+display(Markdown("**Like-for-like: trailing four complete quarters, 2025-Q4 → 2026-Q3 (all eight banners fully covered)**")); display(rank_ttm[cols].round(2))
+print("Formulae: revenue = Σ amount; transactions = row count; avg ticket = revenue / transactions; share = banner revenue / Σ eight banners; "
+      "reach = distinct Shukran IDs (Viva: distinct Viva Rewards IDs — anonymous baskets excluded, NOT comparable).")
+
+%%CODE
+fig, ax = plt.subplots(1, 2, figsize=(14, 4.6))
+for a, r, ttl in [(ax[0], rank_ttm.sort_values("revenue_aed"), "Recorded revenue, 2025-Q4 → 2026-Q3 (like-for-like)"),
+                  (ax[1], rank_ttm.sort_values("transactions"), "Transactions, 2025-Q4 → 2026-Q3 (like-for-like)")]:
+    col = "revenue_aed" if "revenue" in ttl else "transactions"
+    a.barh(r.banner, r[col], color=[BC[b] for b in r.banner])
+    for i, (v, rk) in enumerate(zip(r[col], r["rank_revenue" if col == "revenue_aed" else "rank_transactions"])):
+        a.text(v, i, f"  #{rk}  " + (f"AED {v/1e6:.2f}M" if col == "revenue_aed" else f"{v:,.0f}"), va="center", fontsize=8.5)
+    a.set_xlim(0, r[col].max() * 1.35); a.set(title=ttl, xlabel="AED" if col == "revenue_aed" else "Transactions")
+    if col == "revenue_aed": a.xaxis.set_major_formatter(AED)
+save(fig, "fin_banner_ranking")
+
+%%MD
+### 6.3 Profit — what can and cannot be said
+
+%%CODE
+cost_like = [c for df in (cust, tx, viva) for c in df.columns if any(k in c.lower() for k in ["cost", "margin", "profit", "cogs", "expense", "opex"])]
+print("Cost / margin / expense fields found in the supplied data:", cost_like or "NONE")
+print("=> Actual banner profitability CANNOT be established from these files. Only assumption-driven contribution proxies are shown.")
+# Two clearly hypothetical assumption sets to show how a ranking reacts to margin assumptions (editable in the dashboard)
+UNIFORM = {b: 30.0 for b in L.ALL_BANNERS}
+ILLUSTRATIVE = {"Home Centre": 45, "Homebox": 35, "Splash": 50, "Max": 40, "Babyshop": 40, "Centrepoint": 35, "Funcity": 60, "Viva": 20}
+scen = pd.concat([L.contribution_scenario(rank_ttm, UNIFORM).assign(scenario="Uniform 30% (hypothetical)"),
+                  L.contribution_scenario(rank_ttm, ILLUSTRATIVE).assign(scenario="Illustrative differentiated margins (hypothetical)")])
+scen.to_csv(L.METRICS / "profit_scenarios.csv", index=False)
+scen.round(1)
+
+%%MD
+Under a uniform margin the proxy ranking is identical to the revenue ranking by construction. With differentiated margins (illustrative numbers, **not Landmark data**), the middle of the ranking reorders while the premium home banner stays first. The point for leadership: *revenue rank is measured; profit rank is unknown until margin data is supplied.* The dashboard lets an analyst enter their own margins.
+
+### 6.4 Home Centre vs Homebox
+
+%%CODE
+seg_cols = ["monetary", "frequency", "discount_rate", "n_banners", "age", "family_size", "has_kids", "churned"]
+def pair_table(a, b):
+    rows = []
+    for ban in (a, b):
+        t_ = tx[tx.banner == ban]; ttm = t_[(t_.date >= "2025-10-01") & (t_.date <= "2026-09-30")]
+        shoppers = cv[cv[f"bspend_{ban}"] > 0]
+        rows.append({"banner": ban, "positioning": L.BANNER_POSITION[ban],
+                     "revenue_full_aed": t_.amount.sum(), "revenue_ttm_aed": ttm.amount.sum(), "transactions_full": len(t_),
+                     "avg_ticket_aed": t_.amount.mean(), "revenue_share_full_pct": t_.amount.sum() / allx.amount.sum() * 100,
+                     "discount_rate_pct": t_.discount_used.mean() * 100, "shoppers": len(shoppers),
+                     "shopper_total_spend_median_aed": shoppers.monetary.median(), "shopper_frequency_mean": shoppers.frequency.mean(),
+                     "shopper_discount_rate_pct": shoppers.discount_rate.mean() * 100, "shopper_n_banners_mean": shoppers.n_banners.mean(),
+                     "shopper_age_mean": shoppers.age.mean(), "shopper_has_kids_pct": shoppers.has_kids.mean() * 100,
+                     "shopper_churn_rate_pct": shoppers.churned.mean() * 100})
+    return pd.DataFrame(rows).set_index("banner")
+pair_home = pair_table("Home Centre", "Homebox")
+pair_home.T.round(2)
+
+%%CODE
+def pair_trend(a, b, fname, title):
+    fig, ax = plt.subplots(1, 2, figsize=(13, 3.8))
+    for ban in (a, b):
+        q = tx[tx.banner == ban].groupby(tx.date.dt.to_period("Q")).amount.agg(["sum", "mean"])
+        q = q[(q.index > pd.Period("2024Q2")) & (q.index < pd.Period("2026Q4"))]     # complete quarters only
+        ax[0].plot(q.index.astype(str), q["sum"], marker="o", color=BC[ban], lw=2, label=ban)
+        ax[1].plot(q.index.astype(str), q["mean"], marker="o", color=BC[ban], lw=2, label=ban)
+    ax[0].yaxis.set_major_formatter(AED)
+    ax[0].set(title=f"{title}: quarterly recorded revenue (complete quarters)", ylabel="AED", xlabel="Quarter")
+    ax[1].set(title=f"{title}: average ticket", ylabel="AED per transaction", xlabel="Quarter"); ax[1].set_ylim(0)
+    for a_ in ax: a_.legend(); a_.tick_params(axis="x", rotation=45)
+    save(fig, fname)
+pair_trend("Home Centre", "Homebox", "pair_home_trend", "Home Centre vs Homebox")
+
+%%MD
+**Home Centre vs Homebox — descriptive reading.** Home Centre records far more revenue from fewer transactions and fewer shoppers: its average ticket is roughly three times Homebox's. Homebox shoppers use discounts more often. Demographic averages of the two shopper groups are almost identical — the premium/value split is a *behavioural* difference (ticket size, discount use), not a demographic one. These are descriptive associations; they do not show *why* customers choose a tier.
+
+### 6.5 Splash vs Max
+
+%%CODE
+pair_fashion = pair_table("Splash", "Max")
+pd.concat([pair_home, pair_fashion]).to_csv(L.METRICS / "pair_comparison.csv")
+display(pair_fashion.T.round(2))
+pair_trend("Splash", "Max", "pair_fashion_trend", "Splash vs Max")
+
+%%MD
+**Splash vs Max — descriptive reading.** Splash records higher revenue with fewer transactions than Max: its tickets are about 2.3× larger, while Max has more shoppers and a higher discount rate. The pattern mirrors the home pair, which is why discount behaviour and ticket size outside a category are natural candidate signals for routing (§11–§12).
+
+### 6.6 Other banners — Babyshop, Centrepoint, Funcity, Viva (individually, not forced into pairs)
+
+%%CODE
+others = []
+for ban in ["Babyshop", "Centrepoint", "Funcity"]:
+    t_ = tx[tx.banner == ban]; sh = cv[cv[f"bspend_{ban}"] > 0]
+    others.append({"banner": ban, "positioning": L.BANNER_POSITION[ban], "revenue_full_aed": t_.amount.sum(),
+                   "revenue_ttm_aed": rank_ttm.set_index("banner").loc[ban, "revenue_aed"], "transactions": len(t_),
+                   "avg_ticket_aed": t_.amount.mean(), "discount_rate_pct": t_.discount_used.mean() * 100,
+                   "reach": f"{len(sh):,} Shukran members ({len(sh)/len(cv)*100:.0f}%)",
+                   "shopper_has_kids_pct": sh.has_kids.mean() * 100, "shopper_churn_rate_pct": sh.churned.mean() * 100})
+others.append({"banner": "Viva", "positioning": L.BANNER_POSITION["Viva"], "revenue_full_aed": viva.amount.sum(),
+               "revenue_ttm_aed": rank_ttm.set_index("banner").loc["Viva", "revenue_aed"], "transactions": len(viva),
+               "avg_ticket_aed": viva.amount.mean(), "discount_rate_pct": np.nan,
+               "reach": f"{gap['viva_identified_members']:,} Viva Rewards IDs + {gap['viva_anonymous_pct']}% anonymous baskets (not comparable)",
+               "shopper_has_kids_pct": np.nan, "shopper_churn_rate_pct": np.nan})
+other_banners = pd.DataFrame(others).set_index("banner")
+other_banners.to_csv(L.METRICS / "other_banners.csv")
+display(other_banners.round(2))
+viva_cat = viva.groupby("category").amount.agg(["sum", "size", "mean"]).rename(columns={"sum": "revenue_aed", "size": "transactions", "mean": "avg_ticket_aed"})
+viva_cat["share_pct"] = viva_cat.revenue_aed / viva_cat.revenue_aed.sum() * 100
+display(Markdown("**Viva category mix** (discount and customer attributes are not recorded for Viva)")); display(viva_cat.round(2))
+
+%%MD
+**Reading.** Centrepoint has the widest reach of any Shukran banner (most members visit it), which makes it the natural "hub" for cross-banner offers; every Babyshop shopper in the data has children at home (and most Funcity shoppers do), versus about half of all members; Funcity has the smallest revenue but a comparable reach, so its role is traffic and family engagement rather than ticket value. Viva is the highest-frequency, lowest-ticket banner and the only one whose customers are invisible to Shukran.

@@ -1,0 +1,477 @@
+%%MD
+## §14 · Customer lifetime value — regression
+
+### 14.1 The circularity problem, stated up front
+The specified target is each member's **total historical spend** (`monetary`). But `monetary = frequency × average ticket` *exactly*, so any model given both inputs can "predict" it almost perfectly without learning anything about value. Three feature sets are therefore compared:
+
+| Set | Features | Purpose |
+|---|---|---|
+| **P — profile only** | age, family size, kids, tenure, gender, emirate | Can demographics alone identify valuable members? |
+| **B — behavioural mix (non-circular)** | P + recency, discount rate, banners, categories, concentration, observed customer age, banner shares | The required historical model, without the target's arithmetic components |
+| **C — circularity audit** | B + log frequency + log average ticket | Shows the trap: near-perfect R² that means nothing |
+
+Then a genuinely **forward-looking** model (§14.3): features at a cutoff, target = spend in the following 180 days, compared against naive baselines.
+
+### 14.2 Historical spend — the three feature sets fitted and compared
+
+%%CODE
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import KFold, learning_curve, validation_curve
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+REG_CAT = ["gender", "emirate"]
+REG_P = ["age", "family_size", "has_kids", "tenure_months"]
+REG_B = REG_P + ["recency_days", "discount_rate", "n_banners", "n_categories", "banner_hhi", "days_since_first"] + [f"bshare_{b}" for b in L.CORE_BANNERS]
+REG_C = REG_B + ["log_frequency", "log_avg_ticket"]
+def reg_specs():
+    s = {"Linear Regression": (LinearRegression(), {}),
+         "Ridge": (Ridge(), {"m__alpha": [0.1, 1, 10, 100, 300]}),
+         "Lasso": (Lasso(max_iter=50000), {"m__alpha": [1, 10, 30, 100]}),
+         "Elastic Net": (ElasticNet(max_iter=50000), {"m__alpha": [0.3, 1, 10], "m__l1_ratio": [0.2, 0.5, 0.8]}),
+         "Decision Tree": (DecisionTreeRegressor(random_state=SEED), {"m__max_depth": [3, 5, 8, None], "m__min_samples_leaf": [5, 20]}),
+         "Random Forest": (RandomForestRegressor(n_estimators=300, random_state=SEED, n_jobs=1), {"m__min_samples_leaf": [1, 5, 15], "m__max_features": [0.5, 1.0]}),
+         "Gradient Boosting": (GradientBoostingRegressor(random_state=SEED, subsample=0.8), {"m__n_estimators": [200, 400], "m__learning_rate": [0.03, 0.1], "m__max_depth": [2, 3]})}
+    return {k: (e, shrink(g)) for k, (e, g) in s.items()}
+REG_SCORERS = {"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error", "r2": "r2"}
+
+def run_reg(set_name, df, y, num, cat, test_size=0.25, extra=None):
+    Xtr, Xte, ytr, yte = train_test_split(df[num + cat], y, test_size=test_size, random_state=SEED)
+    kf = KFold(CV_FOLDS, shuffle=True, random_state=SEED); rows, fitted = [], {}
+    specs = {**reg_specs(), **{k: (e, shrink(g)) for k, (e, g) in (extra or {}).items()}}
+    for name, (est, grid) in specs.items():
+        pipe = Pipeline([("prep", make_prep(num, cat)), ("m", est)])
+        if grid:
+            gs = GridSearchCV(pipe, grid, scoring="neg_root_mean_squared_error", cv=kf, n_jobs=N_JOBS, refit=False).fit(Xtr, ytr)
+            pipe = pipe.set_params(**gs.best_params_); params = str({k[3:]: v for k, v in gs.best_params_.items()})
+        else:
+            params = "—"
+        r = cross_validate(pipe, Xtr, ytr, cv=kf, scoring=REG_SCORERS, return_train_score=True, n_jobs=N_JOBS)
+        mdl = clone(pipe).fit(Xtr, ytr); fitted[name] = mdl; pr = mdl.predict(Xte)
+        rows.append({"feature_set": set_name, "model": name, "best_params": params,
+                     "cv_mae": -r["test_mae"].mean(), "cv_rmse": -r["test_rmse"].mean(), "cv_r2": r["test_r2"].mean(), "cv_r2_std": r["test_r2"].std(),
+                     "train_r2": r["train_r2"].mean(), "train_rmse": -r["train_rmse"].mean(),
+                     "test_mae": mean_absolute_error(yte, pr), "test_rmse": mean_squared_error(yte, pr) ** 0.5, "test_r2": r2_score(yte, pr)})
+    res = pd.DataFrame(rows); res["gap_r2_train_minus_cv"] = res.train_r2 - res.cv_r2
+    return res, fitted, (Xtr, Xte, ytr, yte)
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    regP, fitP, splitP = run_reg("P · profile only", cv, cv.monetary, REG_P, REG_CAT)
+    regB, fitB, splitB = run_reg("B · behavioural mix (non-circular)", cv, cv.monetary, REG_B, REG_CAT)
+    regC, fitC, splitC = run_reg("C · CIRCULARITY AUDIT (+frequency, +ticket)", cv, cv.monetary, REG_C, REG_CAT)
+reg_hist = pd.concat([regP, regB, regC], ignore_index=True)
+reg_hist.to_csv(L.METRICS / "regression_historical.csv", index=False)
+reg_hist[["feature_set", "model", "best_params", "cv_mae", "cv_rmse", "cv_r2", "train_r2", "gap_r2_train_minus_cv", "test_mae", "test_rmse", "test_r2"]].round(3)
+
+%%CODE
+best_B = regB.sort_values("cv_rmse").iloc[0].model
+Xtr_b, Xte_b, ytr_b, yte_b = splitB; pred_b = fitB[best_B].predict(Xte_b)
+fig, ax = plt.subplots(1, 3, figsize=(16, 5.0))
+ax[0].scatter(yte_b, pred_b, s=10, alpha=0.5, color=L.SERIES[0]); lim = [0, max(yte_b.max(), pred_b.max()) * 1.03]
+ax[0].plot(lim, lim, color=L.UI["terra"], lw=1.3, label="perfect prediction"); ax[0].xaxis.set_major_formatter(AED); ax[0].yaxis.set_major_formatter(AED)
+ax[0].set(title=f"Set B · {best_B}: actual vs predicted (test)", xlabel="Actual historical spend (AED)", ylabel="Predicted (AED)"); ax[0].legend()
+ax[1].scatter(pred_b, yte_b - pred_b, s=10, alpha=0.5, color=L.SERIES[0]); ax[1].axhline(0, color=L.UI["terra"], lw=1.3)
+ax[1].xaxis.set_major_formatter(AED); ax[1].set(title="Residuals vs predicted (test)", xlabel="Predicted (AED)", ylabel="Actual − predicted (AED)")
+r2p = reg_hist.pivot_table(index="model", columns="feature_set", values="cv_r2")
+for i, c in enumerate(r2p.columns):
+    ax[2].barh(np.arange(len(r2p)) + i * 0.27 - 0.27, r2p[c].clip(lower=-0.05), 0.27, color=L.SERIES[i], label=c, hatch="//" if "AUDIT" in c else None, edgecolor="white")
+ax[2].set_yticks(np.arange(len(r2p)), r2p.index); ax[2].axvline(0, color=L.UI["slate"], lw=0.8)
+ax[2].set(title="Cross-validated R² by feature set", xlabel="CV R² (clipped at −0.05)"); ax[2].legend(fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=1)
+save(fig, "clv_historical")
+lin = fitB["Lasso"].named_steps; coef = pd.Series(lin["m"].coef_, index=lin["prep"].get_feature_names_out()).sort_values(key=abs, ascending=False)
+display(Markdown("**Lasso coefficients (set B, standardised inputs → AED per +1 SD)** — the sign and size tell leadership *which behaviours go with value*"))
+display(coef.head(12).round(1).to_frame("AED per +1 SD"))
+
+%%CODE
+bP = regP.sort_values("cv_rmse").iloc[0]; bB = regB.sort_values("cv_rmse").iloc[0]; bC = regC.sort_values("cv_rmse").iloc[0]
+display(Markdown(f"""**Results.** Profile only: best CV R² **{bP.cv_r2:.2f}** ({bP.model}). Behavioural mix: best CV R² **{bB.cv_r2:.2f}** ({bB.model}; test MAE AED {bB.test_mae:,.0f}, RMSE AED {bB.test_rmse:,.0f}).
+Circularity audit: CV R² **{bC.cv_r2:.3f}** ({bC.model}) — near-perfect only because frequency × ticket *is* the target. Linear, Ridge and Lasso perform almost identically on set B (the features are few and not collinear enough for regularisation to matter), while the tree ensembles capture interactions between banner mix and breadth."""))
+
+%%MD
+**Business meaning of the errors.** The test MAE of the best set-B model is the typical size of a mistake, in AED, when estimating a member's total spend over the ~29-month window from *how* they shop (mix, breadth, recency, discount use) rather than *how much* they shop. Demographics alone (set P) explain very little of the variation in value — another argument against demographic targeting. Set C's near-perfect R² is the circularity trap and is **not** reported as a CLV model. Historical spend is still a backward-looking quantity; the forward model below is what should drive value-based decisions.
+
+### 14.3 Forward-looking CLV — next-180-day spend (advanced)
+Features are computed with transactions up to **cutoff = as-of − 180 days (2026-04-04)**; the target is each member's recorded spend in the following 180 days (2026-04-05 → 2026-10-01). Frequency and monetary features are now *legitimate* predictors, because the target lies in the future. Models must beat naive baselines to be useful: (i) the training mean; (ii) *persistence* — "next 180 days = last 180 days"; (iii) persistence × the growth ratio estimated on the training split only.
+
+Because the target is skewed (a few large home purchases) and a small share of members spend nothing, three further candidates compete under the same protocol: gradient boosting on a **log-transformed target**, histogram gradient boosting with a **Poisson loss** (suited to non-negative, skewed amounts) and a **two-part model** (probability of buying × expected spend if buying). The deployed model is whichever has the lowest CV RMSE.
+
+%%CODE
+REF_CLV = OBS_DATE - pd.Timedelta(days=180)
+cv_pre = L.build_customer_view(cust, tx_a, REF_CLV)
+future = tx_a[(tx_a.date > REF_CLV) & (tx_a.date <= OBS_DATE)].groupby("customer_id").amount.sum()
+clv_df = cv_pre[cv_pre.has_tx == 1].copy(); clv_df["y_next180"] = future.reindex(clv_df.index).fillna(0)
+NEXT_NUM = ["age", "family_size", "has_kids", "days_member_ref", "recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate",
+            "n_banners", "banner_hhi", "purchase_rate_30d", "log_spend_rate_30d", "f90", "log_spend90", "f180", "log_spend180", "trend90", "days_since_first"] + \
+           [f"bshare_{b}" for b in L.CORE_BANNERS]
+print(f"Cutoff {REF_CLV.date()} · members with pre-cutoff history: {len(clv_df):,} (excluded: {int((cv_pre.has_tx == 0).sum())} with no history yet) · "
+      f"target mean AED {clv_df.y_next180.mean():,.0f}, zero-spend share {(clv_df.y_next180 == 0).mean():.1%}")
+from sklearn.compose import TransformedTargetRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor
+NEXT_EXTRA = {
+    "Gradient Boosting · log target": (TransformedTargetRegressor(regressor=GradientBoostingRegressor(random_state=SEED, subsample=0.8), func=np.log1p, inverse_func=np.expm1),
+                                       {"m__regressor__n_estimators": [200, 400], "m__regressor__learning_rate": [0.03, 0.1], "m__regressor__max_depth": [2, 3]}),
+    "Hist. Gradient Boosting · Poisson loss": (HistGradientBoostingRegressor(loss="poisson", random_state=SEED),
+                                               {"m__max_iter": [200, 400], "m__learning_rate": [0.03, 0.1], "m__max_leaf_nodes": [15, 31]}),
+    "Two-part (buy? × how much)": (L.HurdleRegressor(classifier=GradientBoostingClassifier(n_estimators=200, max_depth=2, learning_rate=0.05, random_state=SEED),
+                                                     regressor=GradientBoostingRegressor(random_state=SEED, subsample=0.8)),
+                                   {"m__regressor__n_estimators": [200, 400], "m__regressor__learning_rate": [0.03, 0.1], "m__regressor__max_depth": [2, 3]}),
+}
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    regN, fitN, splitN = run_reg("Next-180-day spend", clv_df, clv_df.y_next180, NEXT_NUM, REG_CAT, extra=NEXT_EXTRA)
+Xtr_n, Xte_n, ytr_n, yte_n = splitN
+growth = ytr_n.sum() / clv_df.loc[Xtr_n.index, "spend180"].sum()
+base_rows = []
+for bname, ptr, pte in [("Baseline · training mean", np.full(len(ytr_n), ytr_n.mean()), np.full(len(yte_n), ytr_n.mean())),
+                        ("Baseline · persistence (last 180 d)", clv_df.loc[Xtr_n.index, "spend180"], clv_df.loc[Xte_n.index, "spend180"]),
+                        (f"Baseline · persistence × growth {growth:.2f} (train)", clv_df.loc[Xtr_n.index, "spend180"] * growth, clv_df.loc[Xte_n.index, "spend180"] * growth)]:
+    base_rows.append({"feature_set": "Next-180-day spend", "model": bname, "best_params": "—", "train_r2": r2_score(ytr_n, ptr), "cv_r2": np.nan,
+                      "test_mae": mean_absolute_error(yte_n, pte), "test_rmse": mean_squared_error(yte_n, pte) ** 0.5, "test_r2": r2_score(yte_n, pte)})
+reg_next = pd.concat([regN, pd.DataFrame(base_rows)], ignore_index=True)
+reg_next.to_csv(L.METRICS / "regression_next_period.csv", index=False)
+reg_next[["model", "best_params", "cv_mae", "cv_rmse", "cv_r2", "train_r2", "gap_r2_train_minus_cv", "test_mae", "test_rmse", "test_r2"]].round(3)
+
+%%CODE
+best_N = regN.sort_values("cv_rmse").iloc[0].model
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    clv_final = clone(fitN[best_N]).fit(clv_df[NEXT_NUM + REG_CAT], clv_df.y_next180)
+joblib.dump(clv_final, L.MODELS / "clv_next180_final.joblib")
+# Scoring guard (as for churn, §13.4): features at the as-of date are clipped to the training range before predicting the next 180 days
+from scipy.stats import spearmanr
+X_score_clv, guard_clv = L.clip_to_reference(cv[NEXT_NUM + REG_CAT], clv_df[NEXT_NUM + REG_CAT], NEXT_NUM)
+cv["clv_next180_pred_aed"] = np.clip(clv_final.predict(X_score_clv), 0, None)
+clv_unguarded = np.clip(clv_final.predict(cv[NEXT_NUM + REG_CAT]), 0, None)
+guard_clv = guard_clv[guard_clv.share_clipped > 0].sort_values("share_clipped", ascending=False)
+guard_clv.to_csv(L.METRICS / "scoring_guard_clv.csv")
+L.save_json({"features_clipped": guard_clv.index.tolist(), "max_share_clipped": float(guard_clv.share_clipped.max()) if len(guard_clv) else 0.0,
+             "mean_pred_guarded": float(cv.clv_next180_pred_aed.mean()), "mean_pred_unguarded": float(clv_unguarded.mean()),
+             "spearman_guarded_vs_unguarded": float(spearmanr(cv.clv_next180_pred_aed, clv_unguarded)[0])}, L.METRICS / "scoring_guard_clv.json")
+pn = fitN[best_N].predict(Xte_n)
+fig, ax = plt.subplots(1, 2, figsize=(13, 4.3))
+ax[0].scatter(yte_n, pn, s=10, alpha=0.5, color=L.SERIES[2]); lim = [0, max(yte_n.max(), pn.max()) * 1.03]
+ax[0].plot(lim, lim, color=L.UI["terra"], lw=1.3, label="perfect prediction"); ax[0].legend()
+ax[0].set(title=f"Next-180-day spend · {best_N} (test)", xlabel="Actual spend after cutoff (AED)", ylabel="Predicted (AED)")
+cmp = reg_next.set_index("model").test_rmse.sort_values()
+ax[1].barh(cmp.index, cmp.values, color=[L.UI["muted"] if "Baseline" in i else L.SERIES[2] for i in cmp.index])
+for i, v in enumerate(cmp.values): ax[1].text(v, i, f" {v:,.0f}", va="center", fontsize=8)
+ax[1].set(title="Test RMSE — models vs naive baselines (lower is better)", xlabel="RMSE (AED)"); ax[1].set_xlim(0, cmp.max() * 1.18)
+save(fig, "clv_next_period")
+pd.concat([pd.DataFrame({"model": f"Historical (set B) · {best_B}", "actual_aed": yte_b.values, "predicted_aed": pred_b}, index=Xte_b.index),
+           pd.DataFrame({"model": f"Next-180-day · {best_N}", "actual_aed": yte_n.values, "predicted_aed": pn}, index=Xte_n.index)]).rename_axis("customer_id").to_csv(L.METRICS / "clv_test_predictions.csv")
+print(f"Forward predictions written for all {len(cv):,} members (next 180 days from {OBS_DATE.date()}); mean predicted AED {cv.clv_next180_pred_aed.mean():,.0f}")
+
+%%CODE
+bN = regN.sort_values("cv_rmse").iloc[0]; base_mean = reg_next[reg_next.model.str.startswith("Baseline · training")].iloc[0]; base_p = reg_next[reg_next.model.str.startswith("Baseline · persistence (")].iloc[0]
+display(Markdown(f"""**Results — forward CLV.** Best model **{bN.model}**: test R² {bN.test_r2:.2f}, MAE AED {bN.test_mae:,.0f}, RMSE AED {bN.test_rmse:,.0f}; the training-mean baseline has RMSE AED {base_mean.test_rmse:,.0f} and "same as last 180 days" has RMSE AED {base_p.test_rmse:,.0f} (R² {base_p.test_r2:.2f}).
+Future spend is genuinely hard to predict at the individual level (R² well below the historical model's), but the model clearly beats naive rules, so it is useful for **ranking** members by expected value — which is how the dashboard uses it — rather than for forecasting an individual's exact spend. Persistence performs badly because individual purchases are lumpy (one sofa ≠ a habit) and many members' spend shifts between periods."""))
+
+%%MD
+### 14.4 Benchmarks and ranking quality — is the forward model worth using?
+Three questions:
+1. **Do other loss functions help?** The log-target, Poisson-loss and two-part candidates competed in §14.3 under the same protocol; their results are summarised below.
+2. **How does a probabilistic CLV model compare?** BG/NBD (purchase frequency with drop-out) × Gamma-Gamma (spend per purchase) is the standard "buy-till-you-die" benchmark. It is fitted on the training members' pre-cutoff history only (a "transaction" is a purchase day; time in weeks) and predicts their next-180-day spend.
+3. **How well does each model *rank* members?** The dashboard uses the forecast to rank, so Spearman rank correlation and the share of actual future spend captured by the top 10% of predictions matter as much as RMSE. Paired bootstrap intervals show which differences are real.
+
+The BG/NBD and Gamma-Gamma estimators are implemented in `lci_core.py` (maximum likelihood) and reproduce the published CDNOW benchmark (Fader, Hardie & Lee 2005: r = 0.243, α = 4.414, a = 0.793, b = 2.426; Gamma-Gamma p = 6.25, q = 3.74, γ = 15.44); `tests/test_core.py` adds a simulation-recovery test. *Caveat:* members who joined before the file starts have their first purchase in the file treated as their first purchase (left truncation).
+
+%%CODE
+rfm_c = L.rfm_summary(tx_a, REF_CLV).reindex(clv_df.index)
+tr_n_ids, te_n_ids = Xtr_n.index, Xte_n.index
+bg = L.bgnbd_fit(rfm_c.loc[tr_n_ids, "x"], rfm_c.loc[tr_n_ids, "t_x"], rfm_c.loc[tr_n_ids, "T"])
+gg = L.gamma_gamma_fit(rfm_c.loc[tr_n_ids, "x"], rfm_c.loc[tr_n_ids, "m"])
+H_WEEKS = 180 / 7
+r_te = rfm_c.loc[te_n_ids]
+bg_freq = L.bgnbd_expected(bg, H_WEEKS, r_te.x, r_te.t_x, r_te["T"])
+bg_pred = bg_freq * L.gamma_gamma_expected(gg, r_te.x, r_te.m)
+rep = rfm_c[rfm_c.x > 0]
+corr_xm = float(np.corrcoef(rep.x, rep.m)[0, 1])
+actual_days = (tx_a[(tx_a.date > REF_CLV) & (tx_a.date <= OBS_DATE)].assign(day=lambda t: t.date.dt.normalize())
+               .groupby("customer_id").day.nunique().reindex(te_n_ids).fillna(0))
+
+def top_decile_capture(y, p):
+    y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float); k = max(1, int(round(len(y) * 0.1)))
+    return float(y[np.argsort(-p, kind="stable")[:k]].sum() / y.sum())
+preds_n = {m: np.clip(fitN[m].predict(Xte_n), 0, None) for m in regN.model}
+preds_n["Baseline · training mean"] = np.full(len(yte_n), ytr_n.mean())
+preds_n["Baseline · persistence (last 180 d)"] = clv_df.loc[te_n_ids, "spend180"].values
+preds_n["BG/NBD × Gamma-Gamma (probabilistic)"] = np.asarray(bg_pred, dtype=float)
+bench_rows = []
+for m, p_ in preds_n.items():
+    bench_rows.append({"model": m, "kind": "baseline" if m.startswith("Baseline") else ("probabilistic" if m.startswith("BG/NBD") else "supervised"),
+                       "cv_rmse": float(regN.set_index("model").cv_rmse.get(m, np.nan)), "test_rmse": mean_squared_error(yte_n, p_) ** 0.5,
+                       "test_mae": mean_absolute_error(yte_n, p_), "test_r2": r2_score(yte_n, p_),
+                       "spearman": spearmanr(yte_n, p_)[0] if np.unique(p_).size > 1 else np.nan, "top_decile_capture": top_decile_capture(yte_n, p_),
+                       "mean_prediction": float(np.mean(p_)), "deployed": m == best_N})
+clv_bench = pd.DataFrame(bench_rows).sort_values("test_rmse")
+# Paired bootstrap on the test members: deployed model vs each benchmark (RMSE and Spearman)
+idx_n = L.bootstrap_indices(yte_n, BOOT, stratify=False)
+rmse_f = lambda a, b: mean_squared_error(a, b) ** 0.5
+rho_f = lambda a, b: spearmanr(a, b)[0]
+others = ["Baseline · training mean", "Baseline · persistence (last 180 d)", "BG/NBD × Gamma-Gamma (probabilistic)"] + [m for m in NEXT_EXTRA if m != best_N]
+rm_tab, rm_smp = L.bootstrap_ci(yte_n.values, {k: preds_n[k] for k in [best_N] + others}, rmse_f, idx_n)
+rh_tab, rh_smp = L.bootstrap_ci(yte_n.values, {k: preds_n[k] for k in [best_N] + [o for o in others if np.unique(preds_n[o]).size > 1]}, rho_f, idx_n)
+clv_bench = clv_bench.merge(rm_tab[["model", "ci_low", "ci_high"]].rename(columns={"ci_low": "rmse_ci_low", "ci_high": "rmse_ci_high"}), on="model", how="left")
+clv_pairs = []
+for o in others:
+    d_ = rm_smp[o] - rm_smp[best_N]     # > 0 → deployed model has the lower (better) RMSE
+    row = {"comparison": f"{best_N} vs {o}", "rmse_advantage_of_deployed": float(rmse_f(yte_n, preds_n[o]) - rmse_f(yte_n, preds_n[best_N])),
+           "ci_low": float(np.quantile(d_, 0.025)), "ci_high": float(np.quantile(d_, 0.975))}
+    row["verdict"] = "deployed better" if row["ci_low"] > 0 else ("benchmark better" if row["ci_high"] < 0 else "no clear difference")
+    if o in rh_smp:
+        dr = rh_smp[best_N] - rh_smp[o]
+        row.update({"spearman_advantage_of_deployed": float(rh_tab.set_index("model").point[best_N] - rh_tab.set_index("model").point[o]),
+                    "spearman_ci_low": float(np.quantile(dr, 0.025)), "spearman_ci_high": float(np.quantile(dr, 0.975))})
+    clv_pairs.append(row)
+clv_pairs = pd.DataFrame(clv_pairs)
+clv_bench.to_csv(L.METRICS / "clv_benchmark.csv", index=False); clv_pairs.to_csv(L.METRICS / "clv_benchmark_pairs.csv", index=False)
+L.save_json({"bgnbd": bg, "gamma_gamma": gg, "corr_frequency_vs_spend_per_purchase": corr_xm, "horizon_weeks": H_WEEKS,
+             "test_mean_purchase_days_actual": float(actual_days.mean()), "test_mean_purchase_days_predicted": float(np.mean(bg_freq)),
+             "share_members_p_alive_ge_0_95": float((L.bgnbd_p_alive(bg, r_te.x, r_te.t_x, r_te["T"]) >= 0.95).mean())}, L.METRICS / "clv_probabilistic.json")
+display(clv_bench.round(3)); display(clv_pairs.round(3))
+fig, ax = plt.subplots(1, 2, figsize=(14, 4.6))
+cb = clv_bench.sort_values("test_rmse", ascending=False)
+colr = [L.UI["navy"] if d else (L.UI["muted"] if k == "baseline" else (L.SERIES[1] if k == "probabilistic" else L.SERIES[2])) for d, k in zip(cb.deployed, cb.kind)]
+ax[0].barh(cb.model, cb.test_rmse, xerr=[cb.test_rmse - cb.rmse_ci_low.fillna(cb.test_rmse), cb.rmse_ci_high.fillna(cb.test_rmse) - cb.test_rmse], color=colr, error_kw={"ecolor": L.UI["slate"], "elinewidth": 1})
+ax[0].set(title="Test RMSE with 95% CI (navy = deployed; lower is better)", xlabel="RMSE (AED)"); ax[0].tick_params(axis="y", labelsize=8)
+cr = clv_bench.dropna(subset=["spearman"]).sort_values("top_decile_capture")
+ax[1].barh(cr.model, cr.top_decile_capture * 100, color=[L.UI["navy"] if d else L.SERIES[0] for d in cr.deployed])
+ax[1].axvline(10, color=L.UI["muted"], ls="--", lw=1.2, label="random ranking (10%)")
+for i, (v, r_) in enumerate(zip(cr.top_decile_capture, cr.spearman)): ax[1].text(v * 100, i, f"  {v*100:.0f}% · ρ {r_:.2f}", va="center", fontsize=8)
+ax[1].set(title="Ranking: share of actual future spend in the top 10% of predictions", xlabel="% of next-180-day spend captured"); ax[1].legend(fontsize=8)
+ax[1].tick_params(axis="y", labelsize=8); ax[1].set_xlim(0, cr.top_decile_capture.max() * 130)
+save(fig, "clv_benchmarks")
+
+%%CODE
+cbi = clv_bench.set_index("model"); dep_ = cbi.loc[best_N]; bgr = cbi.loc["BG/NBD × Gamma-Gamma (probabilistic)"]; per = cbi.loc["Baseline · persistence (last 180 d)"]
+cvr = regN.set_index("model").cv_rmse
+alt = {m: cvr[m] for m in NEXT_EXTRA}
+sq = cvr["Gradient Boosting"]
+pair_bg = clv_pairs.set_index("comparison").loc[f"{best_N} vs BG/NBD × Gamma-Gamma (probabilistic)"]
+zero_share = (clv_df.y_next180 == 0).mean()
+log_name = "Gradient Boosting · log target"
+log_mean_ratio = cbi.loc[log_name, "mean_prediction"] / yte_n.mean()
+gap_sq = cvr[best_N] - sq
+loss_note = (f" It differs from plain squared-error boosting by {gap_sq:+,.0f} AED of CV RMSE — negligible against an RMSE of about {sq:,.0f}, so the choice between them hardly matters." if best_N != "Gradient Boosting" else "")
+loss_note += (f" Only {zero_share*100:.1f}% of members spend nothing in the window, so the two-part model's 'will they buy?' stage has little to separate and it behaves much like plain boosting." if zero_share < 0.10 else "")
+loss_note += (f" The log-target model's mean forecast is {log_mean_ratio*100:.0f}% of the actual mean: modelling log-spend and transforming back predicts something closer to a typical member than to the average, which hurts RMSE." if log_mean_ratio < 0.9 else "")
+why = []
+if bg["mean_dropout_p"] < 0.01:
+    why.append(f"the fitted mean drop-out probability is {'effectively zero (< 0.001)' if bg['mean_dropout_p'] < 0.001 else format(bg['mean_dropout_p'], '.3f')} — **no drop-out is visible before the cutoff**, consistent with §10.6's finding that churn arrived as a wave afterwards")
+if actual_days.mean() > 1.05 * np.mean(bg_freq):
+    why.append(f"purchase activity grew after the cutoff (actual {actual_days.mean():.2f} purchase days per test member vs {np.mean(bg_freq):.2f} predicted)")
+bg_better = pair_bg.verdict == "benchmark better"
+display(Markdown(f"""**Reading the benchmarks.**
+* **Loss functions:** CV RMSE — squared-error gradient boosting {sq:,.0f}; {'; '.join(f'{m} {v:,.0f}' for m, v in alt.items())}. The deployed model is **{best_N}**.{loss_note}
+* **Probabilistic benchmark:** BG/NBD × Gamma-Gamma reaches test R² {bgr.test_r2:.2f} and Spearman {bgr.spearman:.2f}, against {dep_.test_r2:.2f} and {dep_.spearman:.2f} for the deployed model (RMSE difference {pair_bg.rmse_advantage_of_deployed:+,.0f} AED in the deployed model's favour, 95% CI {pair_bg.ci_low:+,.0f} to {pair_bg.ci_high:+,.0f} → {pair_bg.verdict}).{(' The gap has identifiable causes: ' + '; and '.join(why) + '. BG/NBD assumes a stable purchase and drop-out process; the supervised model learns the period directly.') if why and not bg_better else ''} Frequency and spend per purchase are {'nearly uncorrelated' if abs(corr_xm) < 0.3 else 'correlated'} (r = {corr_xm:.2f}), so the Gamma-Gamma independence assumption is {'reasonable' if abs(corr_xm) < 0.3 else 'questionable'}.
+* **Ranking:** the deployed model's top 10% of predictions capture {dep_.top_decile_capture*100:.0f}% of actual next-180-day spend (persistence: {per.top_decile_capture*100:.0f}%; random ranking: 10%), with Spearman {dep_.spearman:.2f}. It is a **ranking tool with modest precision** — consistent with how the dashboard uses it."""))
+
+%%MD
+### 14.5 Ranges, not single figures — conformalised prediction intervals
+A point forecast hides its uncertainty. Quantile gradient boosting estimates the 10th and 90th percentiles of next-180-day spend; because quantile models are often over-confident, the interval is then **conformalised** (Romano, Patterson & Candès, 2019): on a calibration part of the training data (30%, not used to fit the quantile models), the amount by which actual spend falls outside the interval is measured, and the interval is widened by the 80th percentile of those misses. This gives an 80% interval whose coverage is guaranteed on average *if future members resemble the calibration members* — an assumption §10.6 shows can fail when the period changes. Coverage is checked on the untouched test set, overall and by predicted-value quartile.
+
+%%CODE
+def quantile_pipe(alpha):
+    return Pipeline([("prep", make_prep(NEXT_NUM, REG_CAT)),
+                     ("m", GradientBoostingRegressor(loss="quantile", alpha=alpha, n_estimators=300, learning_rate=0.05, max_depth=2, min_samples_leaf=20, subsample=0.8, random_state=SEED))])
+def fit_cqr(X, y, alpha=0.2):
+    X_p, X_c, y_p, y_c = train_test_split(X, y, test_size=0.3, random_state=SEED)
+    lo_m, hi_m = quantile_pipe(alpha / 2).fit(X_p, y_p), quantile_pipe(1 - alpha / 2).fit(X_p, y_p)
+    miss = np.maximum(lo_m.predict(X_c) - y_c, y_c - hi_m.predict(X_c))
+    n = len(miss)
+    return {"lo": lo_m, "hi": hi_m, "q": float(np.quantile(miss, min(1.0, np.ceil((n + 1) * (1 - alpha)) / n))), "alpha": alpha, "n_calibration": n}
+def cqr_predict(model, X):
+    a, b = model["lo"].predict(X), model["hi"].predict(X)
+    lo_, hi_ = np.minimum(a, b), np.maximum(a, b)                       # guard against quantile crossing
+    return np.clip(lo_ - model["q"], 0, None), hi_ + model["q"], np.clip(lo_, 0, None), hi_
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    cqr_tr = fit_cqr(Xtr_n, ytr_n)
+lo_te, hi_te, raw_lo_te, raw_hi_te = cqr_predict(cqr_tr, Xte_n)
+y_ = yte_n.values
+inside = (y_ >= lo_te) & (y_ <= hi_te); inside_raw = (y_ >= raw_lo_te) & (y_ <= raw_hi_te)
+pq = pd.qcut(preds_n[best_N], 4, labels=["Q1 low", "Q2", "Q3", "Q4 high"])
+cov_by_q = pd.DataFrame({"inside": inside, "width": hi_te - lo_te, "q": pq}).groupby("q", observed=True).agg(coverage=("inside", "mean"), median_width_aed=("width", "median"), members=("inside", "size"))
+interval_summary = {"target_coverage": 0.8, "test_coverage_conformal": float(inside.mean()), "test_coverage_raw_quantile": float(inside_raw.mean()),
+                    "conformal_widening_aed": cqr_tr["q"], "median_width_aed": float(np.median(hi_te - lo_te)), "n_calibration": cqr_tr["n_calibration"],
+                    "coverage_by_predicted_quartile": cov_by_q.reset_index().to_dict("records")}
+# Deployment: refit on all members with pre-cutoff history, apply to as-of features (with the scoring guard)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    cqr_all = fit_cqr(clv_df[NEXT_NUM + REG_CAT], clv_df.y_next180)
+lo_all, hi_all, _, _ = cqr_predict(cqr_all, X_score_clv)
+cv["clv_next180_low_aed"], cv["clv_next180_high_aed"] = lo_all, hi_all
+interval_summary["share_point_forecast_inside_own_interval"] = float(((cv.clv_next180_pred_aed >= lo_all) & (cv.clv_next180_pred_aed <= hi_all)).mean())
+interval_summary["deployment_widening_aed"] = cqr_all["q"]
+L.save_json(interval_summary, L.METRICS / "clv_intervals.json")
+pd.DataFrame({"actual_aed": y_, "predicted_aed": preds_n[best_N], "low_aed": lo_te, "high_aed": hi_te, "raw_low_aed": raw_lo_te, "raw_high_aed": raw_hi_te},
+             index=te_n_ids).rename_axis("customer_id").to_csv(L.METRICS / "clv_test_intervals.csv")
+display(cov_by_q.round(3))
+fig, ax = plt.subplots(figsize=(13, 4.2))
+o = np.argsort(preds_n[best_N]); xs = np.arange(len(o))
+ax.fill_between(xs, lo_te[o], hi_te[o], color=L.SERIES[2], alpha=0.25, label="80% conformal interval")
+ax.plot(xs, preds_n[best_N][o], color=L.UI["navy"], lw=1.4, label=f"point forecast ({best_N})")
+ax.scatter(xs, y_[o], s=5, c=np.where(inside[o], L.SERIES[0], L.SERIES[1]), label="actual (orange = outside interval)", zorder=3)
+ax.set(title=f"Next-180-day spend on test members, sorted by forecast — coverage {inside.mean()*100:.0f}% (target 80%; raw quantile model {inside_raw.mean()*100:.0f}%)",
+       xlabel="Test members (sorted by point forecast)", ylabel="AED"); ax.legend(fontsize=8, loc="upper left")
+ax.yaxis.set_major_formatter(AED)
+save(fig, "clv_prediction_intervals")
+cov_se = np.sqrt(0.8 * 0.2 / len(y_)) * 100
+cov_note = ("on target" if abs(inside.mean() - 0.8) * 100 <= 2 * cov_se else
+            (f"below the 80% target by more than sampling noise alone (±{2*cov_se:.1f} points) — the calibration and test members differ somewhat, so read the ranges as approximate" if inside.mean() < 0.8
+             else "above the 80% target — the ranges are conservative"))
+display(Markdown(f"""**Reading the intervals.** The conformal 80% interval covers **{inside.mean()*100:.0f}%** of test members — {cov_note} (raw quantile model: {inside_raw.mean()*100:.0f}%; the conformal step widened each interval by AED {cqr_tr['q']:,.0f}). The median interval is AED {np.median(hi_te - lo_te):,.0f} wide — individual next-180-day spend is genuinely uncertain, which is why the forecast is used to *rank*, not to promise amounts. Coverage by predicted-value quartile ranges from {cov_by_q.coverage.min()*100:.0f}% to {cov_by_q.coverage.max()*100:.0f}%. Every member in the dashboard now carries this range alongside the point forecast; {interval_summary['share_point_forecast_inside_own_interval']*100:.0f}% of point forecasts fall inside their own interval (the two come from different models)."""))
+
+%%MD
+## §15 · Bias–variance analysis across models
+**Diagnosis rule (stated before reading the table).** For each model and target: *high variance* if the train-minus-CV gap on the primary metric exceeds 0.10; otherwise *high bias* if even its **training** score is below the best **CV** score achieved on that target (it cannot fit the data as well as the best model generalises); otherwise *balanced*. This is a transparent heuristic, not a statistical test.
+
+%%CODE
+def diag_rows(lb, target, primary, kind="clf"):
+    best_cv = lb[f"cv_{primary}"].max(); rows = []
+    for _, r in lb.iterrows():
+        tr, cvs = r[f"train_{primary}"], r[f"cv_{primary}"]
+        test = r.get(f"test_{primary}", np.nan)
+        gap = tr - cvs
+        dx = "High variance (overfits)" if gap > 0.10 else ("High bias (underfits)" if tr < best_cv else "Balanced")
+        rows.append({"target": target, "model": r.model, "family": r.get("family", "Regression"), "metric": primary, "train": tr, "cv": cvs, "test": test, "gap_train_cv": gap, "diagnosis": dx})
+    return rows
+MITIGATION = {"Logistic Regression": "C (L2 strength) and class weights tuned", "Decision Tree": "depth and leaf-size limits tuned (pruning)",
+              "KNN": "k (smoothness), weighting and distance metric tuned", "SVM (linear)": "C (margin softness) tuned", "SVM (RBF)": "C and gamma tuned (kernel width)",
+              "Gaussian NB": "variance smoothing tuned", "MLP": "L2 alpha, architecture and early stopping tuned", "Random Forest": "leaf size, depth, feature sampling tuned; bagging averages trees",
+              "Extra Trees": "leaf size, depth, feature sampling tuned", "Bagged Trees": "bootstrap fraction and tree depth tuned", "AdaBoost": "learning rate and rounds tuned",
+              "Gradient Boosting": "learning rate, rounds, depth, subsampling tuned", "XGBoost": "learning rate, rounds, depth, row/column subsampling tuned",
+              "Voting (soft)": "averages tuned members", "Voting (hard)": "majority of tuned members", "Stacking (LR meta)": "regularised meta-learner on out-of-fold predictions",
+              "Stacking (LR meta + passthrough)": "stronger meta regularisation (C=0.1) with raw features", "Linear Regression": "none (unregularised baseline)",
+              "Ridge": "L2 alpha tuned", "Lasso": "L1 alpha tuned (feature selection)", "Elastic Net": "alpha and L1 ratio tuned",
+              "Gradient Boosting · log target": "log-transformed target (skew) + rounds, rate, depth tuned",
+              "Hist. Gradient Boosting · Poisson loss": "Poisson deviance for skewed non-negative spend; leaves, rate, rounds tuned",
+              "Two-part (buy? × how much)": "separate purchase-probability and spend models; spend booster tuned"}
+diag = []
+for lab in (lab_churn, lab_home, lab_fash):
+    diag += diag_rows(lab["leaderboard"], lab["target"], lab["primary"])
+for nm, df_ in [("CLV historical (set B)", regB), ("CLV next-180-day", regN)]:
+    diag += diag_rows(df_.assign(family="Regression"), nm, "r2")
+diagnostics = pd.DataFrame(diag)
+diagnostics["mitigation_applied"] = diagnostics.model.map(MITIGATION).fillna("depth/leaf limits tuned")
+
+# Did tuning help? Compare default vs tuned configuration for representative models (same folds)
+def default_vs_tuned(lab, names):
+    rows = []
+    defaults = {"Decision Tree": DecisionTreeClassifier(random_state=SEED), "Random Forest": RandomForestClassifier(300, random_state=SEED, n_jobs=1),
+                "SVM (RBF)": calibrated(SVC(random_state=SEED)), "KNN": KNeighborsClassifier(), "Gradient Boosting": GradientBoostingClassifier(random_state=SEED)}
+    for n in names:
+        r = cross_validate(Pipeline([("prep", make_prep(lab["num"], lab["cat"])), ("m", defaults[n])]), lab["Xtr"], lab["ytr"], cv=lab["skf"],
+                           scoring=SCORERS[lab["primary"]], return_train_score=True, n_jobs=N_JOBS)
+        tuned_row = lab["leaderboard"].set_index("model").loc[n]
+        rows.append({"target": lab["target"], "model": n, "default_train": r["train_score"].mean(), "default_cv": r["test_score"].mean(),
+                     "default_gap": r["train_score"].mean() - r["test_score"].mean(), "tuned_train": tuned_row[f"train_{lab['primary']}"],
+                     "tuned_cv": tuned_row[f"cv_{lab['primary']}"], "tuned_gap": tuned_row[f"train_{lab['primary']}"] - tuned_row[f"cv_{lab['primary']}"]})
+    return rows
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    dvt = pd.DataFrame(default_vs_tuned(lab_churn, ["Decision Tree", "Random Forest", "SVM (RBF)", "KNN", "Gradient Boosting"]) +
+                       default_vs_tuned(lab_home, ["Decision Tree", "Random Forest", "SVM (RBF)", "KNN", "Gradient Boosting"]))
+dvt["mitigation_worked"] = np.where(dvt.tuned_cv > dvt.default_cv + 1e-4, "yes — CV improved", np.where(dvt.tuned_gap < dvt.default_gap - 0.02, "partly — gap reduced", "no material change"))
+diagnostics = diagnostics.merge(dvt[["target", "model", "default_cv", "default_gap", "mitigation_worked"]], on=["target", "model"], how="left")
+diagnostics.to_csv(L.METRICS / "diagnostics.csv", index=False)
+display(Markdown("**Default vs tuned (did the fix work?)**")); display(dvt.round(3))
+display(Markdown("**Model-diagnostics table (all models, all targets)**")); display(diagnostics.round(3))
+display(pd.crosstab(diagnostics.target, diagnostics.diagnosis))
+
+%%CODE
+# Learning curves — key classifier (selected churn model vs an unpruned tree) and key regressors
+def lc(pipe, X, y, cv_, scoring, sizes=np.linspace(0.15, 1.0, 6)):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        n, tr, te = learning_curve(pipe, X, y, cv=cv_, scoring=scoring, train_sizes=sizes, n_jobs=N_JOBS, shuffle=True, random_state=SEED)
+    return n, tr.mean(1), tr.std(1), te.mean(1), te.std(1)
+curves = []
+fig, ax = plt.subplots(1, 3, figsize=(16, 4.3))
+for i, (lbl, pipe) in enumerate([(f"{sel_churn} (selected)", lab_churn["configs"][sel_churn]),
+                                 ("Decision Tree, unpruned", Pipeline([("prep", make_prep(CHURN_NUM, CHURN_CAT)), ("m", DecisionTreeClassifier(random_state=SEED))]))]):
+    n, trm, trs, tem, tes = lc(pipe, Xtr_c, ytr_c, lab_churn["skf"], "average_precision")
+    ax[0].plot(n, trm, color=L.SERIES[i], lw=2, ls="--", marker="o", ms=3, label=f"{lbl} · train"); ax[0].plot(n, tem, color=L.SERIES[i], lw=2, marker="s", ms=3, label=f"{lbl} · CV")
+    ax[0].fill_between(n, tem - tes, tem + tes, color=L.SERIES[i], alpha=0.12)
+    curves += [{"model": lbl, "target": "churn", "n": a, "train": b, "cv": c} for a, b, c in zip(n, trm, tem)]
+ax[0].set(title="Learning curves — churn (PR-AUC)", xlabel="Training members", ylabel="PR-AUC"); ax[0].legend(fontsize=7)
+for i, (lbl, pipe, split_, panel) in enumerate([(f"Set B · {best_B}", fitB[best_B], splitB, 1), ("Set B · Linear Regression", fitB["Linear Regression"], splitB, 1),
+                                                (f"Next-180 · {best_N}", fitN[best_N], splitN, 2), ("Next-180 · Ridge", fitN["Ridge"], splitN, 2)]):
+    n, trm, trs, tem, tes = lc(clone(pipe), split_[0], split_[2], KFold(CV_FOLDS, shuffle=True, random_state=SEED), "r2")
+    c = L.SERIES[i % 2]
+    ax[panel].plot(n, trm, color=c, lw=2, ls="--", marker="o", ms=3, label=f"{lbl} · train"); ax[panel].plot(n, tem, color=c, lw=2, marker="s", ms=3, label=f"{lbl} · CV")
+    ax[panel].fill_between(n, tem - tes, tem + tes, color=c, alpha=0.12)
+    curves += [{"model": lbl, "target": "clv", "n": a, "train": b, "cv": c_} for a, b, c_ in zip(n, trm, tem)]
+ax[1].set(title="Learning curves — CLV historical (R²)", xlabel="Training members", ylabel="R²"); ax[1].legend(fontsize=7)
+ax[2].set(title="Learning curves — CLV next 180 days (R²)", xlabel="Training members", ylabel="R²"); ax[2].legend(fontsize=7)
+pd.DataFrame(curves).to_csv(L.METRICS / "learning_curves.csv", index=False)
+save(fig, "bias_variance_learning_curves")
+
+%%CODE
+# Validation (complexity) curves
+fig, ax = plt.subplots(1, 3, figsize=(16, 4))
+vc_rows = []
+specs_vc = [(ax[0], "Decision Tree · max_depth (churn)", Pipeline([("prep", make_prep(CHURN_NUM, CHURN_CAT)), ("m", DecisionTreeClassifier(random_state=SEED))]), "m__max_depth", [1, 2, 3, 4, 6, 8, 12, 16, 24], Xtr_c, ytr_c, lab_churn["skf"], "average_precision"),
+            (ax[1], "SVM-RBF · C (home routing)", Pipeline([("prep", make_prep(HOME_NUM, HOME_CAT)), ("m", SVC(random_state=SEED))]), "m__C", [0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100], lab_home["Xtr"], lab_home["ytr"], lab_home["skf"], "roc_auc"),
+            (ax[2], "Gradient Boosting · max_depth (next-180 CLV)", Pipeline([("prep", make_prep(NEXT_NUM, REG_CAT)), ("m", GradientBoostingRegressor(n_estimators=200, learning_rate=0.05, random_state=SEED))]), "m__max_depth", [1, 2, 3, 4, 6, 8], Xtr_n, ytr_n, KFold(CV_FOLDS, shuffle=True, random_state=SEED), "r2")]
+for a, ttl, pipe, pname, prange, X_, y_, cv_, sc in specs_vc:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        tr, te = validation_curve(pipe, X_, y_, param_name=pname, param_range=prange, cv=cv_, scoring=sc, n_jobs=N_JOBS)
+    xs = [str(p) for p in prange]
+    a.plot(xs, tr.mean(1), ls="--", marker="o", lw=2, color=L.SERIES[0], label="train"); a.plot(xs, te.mean(1), marker="s", lw=2, color=L.SERIES[1], label="CV")
+    a.fill_between(xs, te.mean(1) - te.std(1), te.mean(1) + te.std(1), color=L.SERIES[1], alpha=0.12)
+    best_i = int(np.argmax(te.mean(1))); a.axvline(xs[best_i], color=L.UI["navy"], lw=1, label=f"best CV at {xs[best_i]}")
+    a.set(title=ttl, xlabel=pname.replace("m__", ""), ylabel=sc); a.legend(fontsize=8)
+    vc_rows += [{"curve": ttl, "param": p, "train": t1, "cv": t2} for p, t1, t2 in zip(xs, tr.mean(1), te.mean(1))]
+pd.DataFrame(vc_rows).to_csv(L.METRICS / "validation_curves.csv", index=False)
+save(fig, "bias_variance_validation_curves")
+
+%%MD
+### 15.1 Bagging lowers variance, boosting lowers bias — measured, not assumed
+`mlxtend.evaluate.bias_variance_decomp` re-trains each model on bootstrap resamples of the churn training set and decomposes its expected 0-1 loss on the test set into **bias** (systematic error of the average model) and **variance** (how much the model changes with the sample). The same is done for the CLV regressors with squared error.
+
+%%CODE
+from mlxtend.evaluate import bias_variance_decomp
+prep_c = make_prep(CHURN_NUM, CHURN_CAT).fit(Xtr_c)
+A_tr, A_te = prep_c.transform(Xtr_c), prep_c.transform(Xte_c)
+ROUNDS = 10 if FAST else 30
+bv_specs = [("Decision tree (unpruned)", "single", DecisionTreeClassifier(random_state=SEED)),
+            ("Bagged trees (100 unpruned)", "bagging", BaggingClassifier(DecisionTreeClassifier(random_state=SEED), n_estimators=100, random_state=SEED, n_jobs=N_JOBS)),
+            ("Random forest (200)", "bagging", RandomForestClassifier(200, random_state=SEED, n_jobs=N_JOBS)),
+            ("Decision stump (depth 1)", "single", DecisionTreeClassifier(max_depth=1, random_state=SEED)),
+            ("AdaBoost (200 stumps)", "boosting", AdaBoostClassifier(n_estimators=200, learning_rate=0.5, random_state=SEED)),
+            ("Gradient boosting (200, depth 2)", "boosting", GradientBoostingClassifier(n_estimators=200, max_depth=2, learning_rate=0.05, random_state=SEED))]
+bv = []
+for name, fam, est in bv_specs:
+    loss, bias, var = bias_variance_decomp(est, A_tr, ytr_c.values, A_te, yte_c.values, loss="0-1_loss", num_rounds=ROUNDS, random_seed=SEED)
+    bv.append({"task": "churn (0-1 loss)", "model": name, "family": fam, "expected_loss": loss, "bias": bias, "variance": var})
+prep_n = make_prep(NEXT_NUM, REG_CAT).fit(Xtr_n); N_tr, N_te = prep_n.transform(Xtr_n), prep_n.transform(Xte_n)
+for name, fam, est in [("Regression tree (unpruned)", "single", DecisionTreeRegressor(random_state=SEED)),
+                       ("Random forest regressor (200)", "bagging", RandomForestRegressor(200, random_state=SEED, n_jobs=N_JOBS)),
+                       ("Linear regression", "single", LinearRegression()),
+                       ("Gradient boosting regressor (200)", "boosting", GradientBoostingRegressor(n_estimators=200, max_depth=2, learning_rate=0.05, random_state=SEED))]:
+    loss, bias, var = bias_variance_decomp(est, N_tr, ytr_n.values, N_te, yte_n.values, loss="mse", num_rounds=ROUNDS, random_seed=SEED)
+    bv.append({"task": "next-180 CLV (MSE, AED²)", "model": name, "family": fam, "expected_loss": loss, "bias": bias, "variance": var})
+bvd = pd.DataFrame(bv); bvd["variance_share_pct"] = bvd.variance / bvd.expected_loss * 100
+bvd.to_csv(L.METRICS / "bias_variance_decomposition.csv", index=False)
+display(bvd.round(4))
+fig, ax = plt.subplots(1, 2, figsize=(14, 4))
+for a, (task, g) in zip(ax, bvd.groupby("task", sort=False)):
+    y_ = np.arange(len(g))
+    a.barh(y_, g.bias, color=L.SERIES[0], label="bias"); a.barh(y_, g.variance, left=g.bias, color=L.SERIES[1], label="variance", hatch="//", edgecolor="white")
+    a.set_yticks(y_, g.model); a.invert_yaxis(); a.set(title=f"Bias–variance decomposition · {task}", xlabel="Expected loss = bias + variance"); a.legend()
+save(fig, "bias_variance_decomposition")
+
+%%CODE
+bvc = bvd[bvd.task.str.startswith("churn")].set_index("model")
+dt_, bag_, rf_ = bvc.loc["Decision tree (unpruned)"], bvc.loc["Bagged trees (100 unpruned)"], bvc.loc["Random forest (200)"]
+st_, ada_, gb_ = bvc.loc["Decision stump (depth 1)"], bvc.loc["AdaBoost (200 stumps)"], bvc.loc["Gradient boosting (200, depth 2)"]
+display(Markdown(f"""**Measured on the churn data:** unpruned tree — bias {dt_.bias:.3f}, variance {dt_.variance:.3f}; bagged trees — variance {bag_.variance:.3f}; random forest — variance {rf_.variance:.3f}
+(**bagging {'cut' if min(bag_.variance, rf_.variance) < dt_.variance else 'did not cut'} variance by {(1 - min(bag_.variance, rf_.variance) / dt_.variance) * 100:.0f}%**).
+Stump — bias {st_.bias:.3f}, variance {st_.variance:.3f}; AdaBoost — bias {ada_.bias:.3f}; gradient boosting — bias {gb_.bias:.3f}
+(**boosting {'lowered' if min(ada_.bias, gb_.bias) < st_.bias else 'did not lower'} bias relative to the stump**). Diagnoses across all models: {diagnostics.diagnosis.value_counts().to_dict()}."""))
+
+%%MD
+**Reflection — bagging, boosting and what was done.** The decomposition shows the textbook mechanisms on Landmark's own data: the unpruned tree has high variance, and bagging/random forests keep its low bias while cutting the variance part of the loss; the depth-1 stump is the opposite (high bias, almost no variance), and boosting lowers the bias part — the size of the reduction differs between AdaBoost and gradient boosting (figures above), and boosting adds back some variance. In the model tables, the tuning applied to each family (depth limits, leaf sizes, C/gamma, L1/L2 strength, learning rate) closes the train–CV gap for the variance-prone learners; the default-vs-tuned table records where this actually improved CV performance and where it did not. **In business terms:** a high-variance churn model would produce a different at-risk list every month for no real reason; a high-bias one would miss whole groups of lapsing members. The selected models sit between the two.

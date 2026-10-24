@@ -1,0 +1,346 @@
+%%MD
+## §13 · Churn — threshold optimisation, error costs and the at-risk list
+
+### 13.1 Error costs and threshold tuning
+**Which error is costlier?** A **false negative** is a lapsing member nobody contacts — the whole future margin of that member can be lost. A **false positive** is an active member who receives a retention offer they did not need — the cost of the offer (and some margin given away). For a loyalty programme the first is normally several times larger than the second, so the model is operated **below** the default 0.5 threshold, trading precision for recall.
+
+No actual retention costs or customer-level margins are supplied, so costs are expressed as **relative scenarios** (C_FN : C_FP = 2:1, 5:1, 10:1, with 5:1 as the base case). These are assumptions, not Landmark expenditure; the dashboard lets the user change them.
+
+%%CODE
+sel_churn = lab_churn["selected"]; churn_pipe = lab_churn["configs"][sel_churn]
+Xtr_c, ytr_c, Xte_c, yte_c = lab_churn["Xtr"], lab_churn["ytr"], lab_churn["Xte"], lab_churn["yte"]
+prev = ytr_c.mean()
+print(f"Class balance (train): churned = {prev:.3f}. Baselines: majority-class accuracy = {1-prev:.3f}; random-ranking PR-AUC = {prev:.3f}")
+# Out-of-fold probabilities on the TRAINING set = validation data for threshold tuning (test set untouched)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    oof_tr = cross_val_predict(clone(churn_pipe), Xtr_c, ytr_c, cv=lab_churn["skf"], method="predict_proba", n_jobs=N_JOBS)[:, 1]
+def sweep(y, p, thresholds=np.round(np.arange(0.05, 0.951, 0.01), 2)):
+    rows = []
+    for t in thresholds:
+        pr = (p >= t).astype(int); tn, fp, fn, tp = confusion_matrix(y, pr, labels=[0, 1]).ravel()
+        rows.append({"threshold": t, "tp": tp, "fp": fp, "fn": fn, "tn": tn, "precision": tp / (tp + fp) if tp + fp else np.nan,
+                     "recall": tp / (tp + fn), "f1": 2 * tp / (2 * tp + fp + fn), "flagged_share": (tp + fp) / len(y)})
+    return pd.DataFrame(rows)
+thr_curve = sweep(ytr_c.values, oof_tr)
+SCENARIOS = {"2:1": 2.0, "5:1 (base)": 5.0, "10:1": 10.0}
+for sname, cfn in SCENARIOS.items():
+    thr_curve[f"cost_{sname}"] = (cfn * thr_curve.fn + 1.0 * thr_curve.fp) / len(ytr_c)
+thr_curve.to_csv(L.METRICS / "threshold_curve.csv", index=False)
+scen_thr = {s: float(thr_curve.loc[thr_curve[f"cost_{s}"].idxmin(), "threshold"]) for s in SCENARIOS}
+f1_thr = float(thr_curve.loc[thr_curve.f1.idxmax(), "threshold"])
+print("Cost-minimising thresholds on out-of-fold training predictions:", scen_thr, "| F1-maximising:", f1_thr)
+
+%%CODE
+# Confirm the base-case threshold with scikit-learn's TunedThresholdClassifierCV (internal CV on the training set only)
+from sklearn.model_selection import TunedThresholdClassifierCV
+C_FN, C_FP = 5.0, 1.0
+def neg_cost(y_true, y_pred):
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return -(C_FN * fn + C_FP * fp) / len(y_true)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    tuned = TunedThresholdClassifierCV(clone(churn_pipe), scoring=make_scorer(neg_cost), cv=lab_churn["skf"], thresholds=91, n_jobs=N_JOBS).fit(Xtr_c, ytr_c)
+THR_OP = round(float(tuned.best_threshold_), 3)
+print(f"TunedThresholdClassifierCV (C_FN:C_FP = 5:1) → operational threshold = {THR_OP}  (OOF sweep gave {scen_thr['5:1 (base)']})")
+
+%%CODE
+fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+ax[0].plot(thr_curve.threshold, thr_curve.precision, color=L.SERIES[0], lw=2, label="Precision")
+ax[0].plot(thr_curve.threshold, thr_curve.recall, color=L.SERIES[1], lw=2, label="Recall")
+ax[0].plot(thr_curve.threshold, thr_curve.f1, color=L.SERIES[2], lw=2, label="F1")
+ax[0].plot(thr_curve.threshold, thr_curve.flagged_share, color=L.UI["muted"], lw=1.5, ls="--", label="Share of members flagged")
+ax[0].axvline(0.5, color=L.UI["slate"], lw=1, ls=":"); ax[0].axvline(THR_OP, color=L.UI["navy"], lw=1.6, label=f"operational {THR_OP:.2f}")
+ax[0].set(title="Threshold vs metrics (out-of-fold, training set)", xlabel="Decision threshold on P(churn)", ylabel="Value", ylim=(0, 1.02)); ax[0].legend(fontsize=7.5)
+for i, s in enumerate(SCENARIOS):
+    ax[1].plot(thr_curve.threshold, thr_curve[f"cost_{s}"], lw=2, color=L.SERIES[i], label=f"C_FN:C_FP = {s}")
+    ax[1].scatter([scen_thr[s]], [thr_curve[f"cost_{s}"].min()], color=L.SERIES[i], s=40, zorder=3)
+ax[1].set(title="Expected relative cost per member (scenario units)", xlabel="Decision threshold", ylabel="Relative cost / member"); ax[1].legend(fontsize=8)
+lbt = lab_churn["leaderboard"].sort_values("cv_pr_auc", ascending=False)
+show_models = [sel_churn] + [m for m in lbt.model if m != sel_churn and not m.endswith("(hard)")][:2]
+for i, m in enumerate(show_models):
+    p_ = lab_churn["fitted"][m].predict_proba(Xte_c)[:, 1]; pr_, rc_, _ = precision_recall_curve(yte_c, p_)
+    ax[2].plot(rc_, pr_, lw=2, color=L.SERIES[i], label=f"{m} (AP {average_precision_score(yte_c, p_):.3f})")
+ax[2].axhline(yte_c.mean(), color=L.UI["muted"], lw=1, ls="--", label=f"no-skill = prevalence {yte_c.mean():.2f}")
+p_sel = lab_churn["fitted"][sel_churn].predict_proba(Xte_c)[:, 1]; pr_s, rc_s, th_s = precision_recall_curve(yte_c, p_sel)
+pd.DataFrame({"precision": pr_s[:-1], "recall": rc_s[:-1], "threshold": th_s}).to_csv(L.METRICS / "pr_curve_test.csv", index=False)
+ax[2].set(title="Precision–recall curves (test set)", xlabel="Recall", ylabel="Precision", ylim=(0, 1.02)); ax[2].legend(fontsize=7.5)
+save(fig, "churn_threshold_curves")
+
+%%CODE
+# Final, single evaluation on the untouched test set: default 0.5 vs operational threshold
+mdl_c = lab_churn["fitted"][sel_churn]; p_te = mdl_c.predict_proba(Xte_c)[:, 1]
+rows = []
+for name, t in [("default 0.50", 0.5), (f"operational {THR_OP:.2f} (5:1)", THR_OP)]:
+    pr = (p_te >= t).astype(int); tn, fp, fn, tp = confusion_matrix(yte_c, pr, labels=[0, 1]).ravel()
+    rows.append({"threshold": name, "TP (churners caught)": tp, "FN (churners missed)": fn, "FP (false alarms)": fp, "TN": tn,
+                 "precision": tp / (tp + fp) if tp + fp else np.nan, "recall": tp / (tp + fn), "f1": 2 * tp / (2 * tp + fp + fn),
+                 "flagged per 1,000 members": (tp + fp) / len(yte_c) * 1000, "relative cost 5:1 / member": (5 * fn + fp) / len(yte_c)})
+thr_compare = pd.DataFrame(rows); display(thr_compare.round(3))
+cm_churn = plot_confusion(lab_churn, "churn", ["Active (0)", "Churned (1)"], "Churn — operational threshold", threshold=THR_OP)
+
+%%MD
+### 13.2 Confusion matrix at the operational threshold
+**Reading it (test set).**
+* **True positives** — lapsing members correctly flagged: the retention team's real opportunities.
+* **False negatives** — lapsing members the model missed: the costliest error (lost future spend, no intervention).
+* **False positives** — active members flagged: retention budget spent on people who would have stayed; tolerable at a 5:1 cost ratio.
+* **True negatives** — active members correctly left alone: no cost.
+
+Lowering the threshold from 0.5 to the operational value catches more churners (recall ↑) at the price of more false alarms (precision ↓) and a larger contact list — the "flagged per 1,000 members" column is the retention team's workload. The choice was made on out-of-fold training predictions and then evaluated once on the test set.
+
+%%CODE
+d0, d1 = thr_compare.iloc[0], thr_compare.iloc[1]
+display(Markdown(f"""**On the test set**, moving from 0.50 to the operational threshold {THR_OP:.2f} raises recall from **{d0.recall:.2f} to {d1.recall:.2f}** (churners caught {int(d0['TP (churners caught)'])} → {int(d1['TP (churners caught)'])} of {int(d0['TP (churners caught)'] + d0['FN (churners missed)'])}),
+lowers precision from {d0.precision:.2f} to {d1.precision:.2f}, and increases the contact list from {d0['flagged per 1,000 members']:.0f} to {d1['flagged per 1,000 members']:.0f} members per 1,000.
+Under the 5:1 cost assumption the expected relative cost per member falls from {d0['relative cost 5:1 / member']:.3f} to {d1['relative cost 5:1 / member']:.3f}. If the retention team cannot handle that workload, the 2:1 scenario threshold ({scen_thr['2:1']:.2f}) is the lower-volume alternative."""))
+
+%%MD
+### 13.3 Value-weighted thresholds
+
+%%CODE
+# Value tiers: should high-value members get a lower threshold? (validation data only)
+val_tr = churn_df.loc[Xtr_c.index, "monetary"]
+hv = (val_tr >= val_tr.quantile(0.75)).values
+tier_rows = []
+for tier, mask, cfn in [("Top-25% value (C_FN = 10)", hv, 10.0), ("Other members (C_FN = 5)", ~hv, 5.0)]:
+    c = sweep(ytr_c.values[mask], oof_tr[mask]); c["cost"] = (cfn * c.fn + c.fp) / mask.sum()
+    best_t = c.loc[c.cost.idxmin()]
+    tier_rows.append({"tier": tier, "members_in_train": int(mask.sum()), "churn_rate": float(ytr_c.values[mask].mean()), "cost_optimal_threshold": best_t.threshold,
+                      "recall_at_threshold": best_t.recall, "precision_at_threshold": best_t.precision, "flagged_share": best_t.flagged_share})
+value_tiers = pd.DataFrame(tier_rows); display(value_tiers.round(3))
+THR_HV = float(value_tiers.iloc[0].cost_optimal_threshold)
+L.save_json({"selected_model": sel_churn, "operational_threshold": THR_OP, "high_value_threshold": THR_HV, "f1_threshold": f1_thr,
+             "scenario_thresholds_oof": scen_thr, "cost_ratio_base": "5:1 (relative, editable — not Landmark expenditure)",
+             "test_comparison": thr_compare.to_dict("records"), "value_tiers": value_tiers.to_dict("records"),
+             "design": "early-warning: features at as-of − 90 days", "reference_date": str(REF_CHURN.date())}, L.METRICS / "threshold_choice.json")
+
+%%MD
+**Why the thresholds land where they do.** For well-calibrated probabilities (calibration is checked in §13.8) the cost-minimising threshold is C_FP / (C_FP + C_FN): 1/3 ≈ 0.33 at 2:1, 1/6 ≈ 0.17 at 5:1, 1/11 ≈ 0.09 at 10:1. The empirical cost sweep (thresholds printed above) can be compared with these values as a sanity check on the probabilities; where the cost curve is flat near its minimum, the exact optimum is not sharply determined and small differences from theory are expected. Because missing a high-value churner costs more, the cost-optimal threshold for the top value quartile is **lower** still; when it reaches the bottom of the grid, the economic message is that *for the most valuable members the model's role is to rank and prioritise contacts, not to exclude anyone*. That is the Case Study's "value-weighted churn" made concrete. For the operational list, every member is scored against the base threshold and the list is **sorted by risk × value**; members above 0.50 are the priority band. The dashboard lets the user change the cost ratio and see the threshold, workload and cost move.
+
+### 13.4 Deployment scoring — today's early-warning list
+The selected pipeline is refitted on **all** members with history at the reference date (train + test, after evaluation is finished) and applied to features computed at the as-of date 2026-10-01. Its output is the probability that a member will be lapsed **90 days from now**. These forward scores cannot be validated yet (the future is not in the data), and §10.6 found no evidence that the relationship transfers to a new period, so they are a ranking hypothesis for a monitored pilot; the out-of-fold backtest scores are kept alongside them.
+
+**Scoring guard.** Between the reference date and the as-of date every member ages by 90 days, so time-based features (notably `days_since_first`, §10.5) move beyond the range the model was trained on. Before scoring, each numeric feature is clipped to its training range; the share of members affected and the effect on the scores are reported.
+
+%%CODE
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    churn_final = clone(churn_pipe).fit(churn_df[CHURN_NUM + CHURN_CAT], churn_df.churned)
+    oof_all = cross_val_predict(clone(churn_pipe), churn_df[CHURN_NUM + CHURN_CAT], churn_df.churned, cv=StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED), method="predict_proba", n_jobs=N_JOBS)[:, 1]
+joblib.dump(churn_final, L.MODELS / "churn_final.joblib")
+cv["churn_risk_backtest_oof"] = pd.Series(oof_all, index=churn_df.index).reindex(cv.index)
+X_score_churn, guard_churn = L.clip_to_reference(cv[CHURN_NUM + CHURN_CAT], churn_df[CHURN_NUM + CHURN_CAT], CHURN_NUM)
+cv["churn_risk_next90d"] = churn_final.predict_proba(X_score_churn)[:, 1]
+risk_unguarded = churn_final.predict_proba(cv[CHURN_NUM + CHURN_CAT])[:, 1]
+guard_churn = guard_churn[guard_churn.share_clipped > 0].sort_values("share_clipped", ascending=False)
+guard_churn.to_csv(L.METRICS / "scoring_guard_churn.csv")
+from scipy.stats import spearmanr
+guard_effect_churn = {"features_clipped": guard_churn.index.tolist(), "max_share_clipped": float(guard_churn.share_clipped.max()) if len(guard_churn) else 0.0,
+                      "mean_risk_guarded": float(cv.churn_risk_next90d.mean()), "mean_risk_unguarded": float(risk_unguarded.mean()),
+                      "spearman_guarded_vs_unguarded": float(spearmanr(cv.churn_risk_next90d, risk_unguarded)[0]),
+                      "members_changing_band": int(((cv.churn_risk_next90d >= THR_OP) != (risk_unguarded >= THR_OP)).sum())}
+L.save_json(guard_effect_churn, L.METRICS / "scoring_guard_churn.json")
+display(Markdown(f"**Scoring guard:** {len(guard_churn)} feature(s) clipped for at least one member; most affected — " + ", ".join(f"`{f}` ({r.share_clipped*100:.0f}% of members)" for f, r in guard_churn.head(4).iterrows()) +
+                 f". Mean forward risk {guard_effect_churn['mean_risk_unguarded']:.3f} unguarded → {guard_effect_churn['mean_risk_guarded']:.3f} guarded; rank correlation "
+                 f"{guard_effect_churn['spearman_guarded_vs_unguarded']:.3f}; {guard_effect_churn['members_changing_band']} members cross the contact threshold because of the guard."))
+# Risk bands: "High" = more likely than not to lapse; "Elevated" = above the cost-justified contact threshold
+cv["risk_band"] = np.where(cv.churn_risk_next90d >= 0.5, "High (≥ 0.50)", np.where(cv.churn_risk_next90d >= THR_OP, f"Elevated (≥ {THR_OP:.2f})", "Low"))
+cv["value_tier"] = pd.qcut(cv.monetary, 4, labels=["Q1 low", "Q2", "Q3", "Q4 high"]).astype(str)
+cv["value_at_risk_proxy_aed"] = cv.churn_risk_next90d * cv.monetary
+cv["retention_action"] = np.select(
+    [cv.churned == 1, cv.churn_risk_next90d >= 0.5, cv.churn_risk_next90d >= THR_OP],
+    ["Win-back (already lapsed)", "Retain now — priority", "Retain — cost-justified contact"], default="Business as usual")
+display(pd.crosstab(cv.retention_action, cv.value_tier, margins=True))
+print("Backtest PR-AUC of OOF scores on all members with history:", round(average_precision_score(churn_df.churned, oof_all), 3))
+
+%%MD
+### 13.5 PCA inside supervised pipelines — with vs without
+PCA (keeping 90% of variance) is placed **after** scaling inside each pipeline, so it is fitted on training folds only.
+
+%%CODE
+def pca_compare(lab, primary):
+    rows = []
+    reps = {"Logistic Regression": LogisticRegression(max_iter=3000, C=1.0), "SVM (RBF)": SVC(C=1.0, random_state=SEED),
+            "Random Forest": RandomForestClassifier(300, min_samples_leaf=5, random_state=SEED, n_jobs=1)}
+    for name, est in reps.items():
+        for use_pca in (False, True):
+            steps = [("prep", make_prep(lab["num"], lab["cat"]))] + ([("pca", PCA(n_components=0.90, random_state=SEED))] if use_pca else []) + [("m", clone(est))]
+            r = cross_validate(Pipeline(steps), lab["Xtr"], lab["ytr"], cv=lab["skf"], scoring=SCORERS[primary], return_train_score=True, n_jobs=N_JOBS)
+            rows.append({"target": lab["target"], "model": name, "features": "PCA (90% var.)" if use_pca else "all scaled features",
+                         f"cv_{primary}": r["test_score"].mean(), f"train_{primary}": r["train_score"].mean()})
+    return pd.DataFrame(rows)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    pca_clf = pd.concat([pca_compare(lab_churn, "pr_auc"), pca_compare(lab_home, "roc_auc")], ignore_index=True)
+pca_clf.to_csv(L.METRICS / "pca_vs_raw_classification.csv", index=False)
+pca_clf.round(4)
+
+%%MD
+### 13.6 Neural-network experiment — do activation functions matter here?
+The MLP grid in every lab already crossed four activations (identity = linear, logistic = sigmoid, tanh, ReLU) with two architectures and two L2 strengths, under the same CV folds as every other model. Below, the best configuration per activation is extracted, and each is re-run to check convergence (a fold "hits the iteration cap" when `n_iter_` reaches `max_iter = 300`, which is when scikit-learn raises a `ConvergenceWarning`).
+
+**Why activation is not a setting for other classifiers.** An activation function is the non-linearity applied to the weighted sum inside each hidden neuron; without it, a stack of layers collapses to one linear model (that is literally the `identity` row). Trees, SVMs, KNN and Naive Bayes have no neurons: their non-linearity comes from splits, kernels, neighbourhoods or probability densities, so "activation" has no meaning for them. (Logistic regression *is* a single sigmoid unit, which is why the `identity`-activation MLP behaves much like it.)
+
+%%CODE
+mlp_rows = []
+for lab in (lab_churn, lab_home, lab_fash):
+    g = lab["grids"]["MLP"].copy()
+    g["activation"] = g["param_m__activation"]
+    for act, sub in g.groupby("activation"):
+        b = sub.loc[sub.mean_test_score.idxmax()]
+        params = {k: v for k, v in b["params"].items()}
+        pipe = Pipeline([("prep", make_prep(lab["num"], lab["cat"])), ("m", MLPClassifier(max_iter=300, early_stopping=True, n_iter_no_change=15, random_state=SEED))]).set_params(**params)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            r = cross_validate(pipe, lab["Xtr"], lab["ytr"], cv=lab["skf"], scoring=SCORERS[lab["primary"]], return_estimator=True, n_jobs=N_JOBS)
+        iters = [e.named_steps["m"].n_iter_ for e in r["estimator"]]
+        mlp_rows.append({"target": lab["target"], "primary_metric": lab["primary"], "activation": act,
+                         "best_hidden_layers": str(params["m__hidden_layer_sizes"]), "best_alpha": params["m__alpha"],
+                         "cv_score": b.mean_test_score, "cv_std": b.std_test_score, "train_score": b.mean_train_score,
+                         "gap_train_minus_cv": b.mean_train_score - b.mean_test_score, "mean_fit_seconds": b.mean_fit_time,
+                         "mean_epochs": float(np.mean(iters)), "folds_hitting_iteration_cap": int(sum(i >= 300 for i in iters))})
+mlp_act = pd.DataFrame(mlp_rows)
+best_other = {lab["target"]: lab["leaderboard"].loc[lab["leaderboard"].model != "MLP", f"cv_{lab['primary']}"].max() for lab in (lab_churn, lab_home, lab_fash)}
+mlp_act["best_non_MLP_cv"] = mlp_act.target.map(best_other)
+mlp_act.to_csv(L.METRICS / "mlp_activations.csv", index=False)
+display(mlp_act.round(4))
+fig, ax = plt.subplots(1, 3, figsize=(15, 3.8))
+for a, (tgt, g) in zip(ax, mlp_act.groupby("target", sort=False)):
+    a.bar(g.activation, g.cv_score, yerr=g.cv_std, color=L.SERIES[0], error_kw={"elinewidth": 0.8})
+    a.axhline(g.best_non_MLP_cv.iloc[0], color=L.UI["terra"], lw=1.5, label="best non-MLP model")
+    lo = min(g.cv_score.min(), g.best_non_MLP_cv.iloc[0]) - 0.05
+    a.set(title=f"MLP activations — {tgt}", ylabel=f"CV {g.primary_metric.iloc[0]}", ylim=(max(0, lo), None)); a.legend(fontsize=8)
+save(fig, "mlp_activations")
+
+%%MD
+### 13.7 Routing scores for every member (used for migration and the dashboard)
+Out-of-fold probabilities (each member scored by a model that never saw them) are used for labelled members; the selected routing pipeline, refitted on all labelled members, scores members who have **never** shopped the category — the practical routing use case ("which home banner should we introduce this member to?").
+
+%%CODE
+def routing_scores(lab, df, all_view, num, cat, col_prefix):
+    pipe = lab["configs"][lab["selected"]]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        oof = cross_val_predict(clone(pipe), df[num + cat], df.y, cv=StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED), method="predict_proba", n_jobs=N_JOBS)[:, 1]
+        final = clone(pipe).fit(df[num + cat], df.y)
+    p_all = pd.Series(final.predict_proba(all_view[num + cat])[:, 1], index=all_view.index)
+    p_oof = pd.Series(oof, index=df.index)
+    out = pd.DataFrame({f"{col_prefix}_label": df.y.reindex(all_view.index), f"{col_prefix}_p_premium": p_oof.reindex(all_view.index).fillna(p_all),
+                        f"{col_prefix}_scored_by": np.where(all_view.index.isin(df.index), "out-of-fold", "final model (never shopped category)")}, index=all_view.index)
+    return final, out
+home_final, home_sc = routing_scores(lab_home, home_df, nh, HOME_NUM, HOME_CAT, "home")
+fash_final, fash_sc = routing_scores(lab_fash, fash_df, nf, FASH_NUM, HOME_CAT, "fashion")
+joblib.dump(home_final, L.MODELS / "home_routing_final.joblib"); joblib.dump(fash_final, L.MODELS / "fashion_routing_final.joblib")
+cv = cv.join(home_sc).join(fash_sc)
+print("Members never shopping home, now routed by the model:", (cv.home_scored_by != "out-of-fold").sum(),
+      "| never shopping fashion:", (cv.fashion_scored_by != "out-of-fold").sum())
+pd.DataFrame({"home OOF ROC-AUC": [roc_auc_score(home_df.y, cv.loc[home_df.index, "home_p_premium"])],
+              "fashion OOF ROC-AUC": [roc_auc_score(fash_df.y, cv.loc[fash_df.index, "fashion_p_premium"])]}).round(3)
+
+%%MD
+### 13.8 Can the probabilities be read literally? Calibration of the selected models
+The cost-based threshold (§13.1) is tuned empirically, so it does not depend on calibration — but the risk bands ("High ≥ 0.50" reads as *more likely than not*), the Bayes-threshold sanity check and any expected-value arithmetic do. Each selected model is checked on its untouched test set with a **reliability table** (10 equal-count bins: mean predicted probability vs observed rate), the **Brier score** (mean squared error of the probabilities; lower is better), the **Brier skill score** against always predicting the training prevalence (0 = no better, 1 = perfect) and the **expected calibration error** (average gap between predicted and observed rates). As a what-if, the same configuration is re-calibrated on training folds only (Platt/sigmoid and isotonic); the deployed models are not changed by this check.
+
+%%CODE
+from sklearn.metrics import brier_score_loss
+cal_rows, cal_tabs = [], []
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    for lab in (lab_churn, lab_home, lab_fash):
+        y = lab["yte"].values; prev_tr = lab["ytr"].mean()
+        versions = {"as deployed": lab["fitted"][lab["selected"]].predict_proba(lab["Xte"])[:, 1]}
+        for meth in ("sigmoid", "isotonic"):
+            cal_m = CalibratedClassifierCV(clone(lab["configs"][lab["selected"]]), method=meth, cv=lab["skf"]).fit(lab["Xtr"], lab["ytr"])
+            versions[f"recalibrated ({meth})"] = cal_m.predict_proba(lab["Xte"])[:, 1]
+        b_ref = brier_score_loss(y, np.full(len(y), prev_tr))
+        for v, p_ in versions.items():
+            b = brier_score_loss(y, p_)
+            cal_rows.append({"target": lab["target"], "model": lab["selected"], "version": v, "brier": b, "brier_reference": b_ref, "brier_skill": 1 - b / b_ref,
+                             "ece": L.expected_calibration_error(y, p_), "mean_predicted": p_.mean(), "observed_rate": y.mean(), "roc_auc": roc_auc_score(y, p_)})
+            if v == "as deployed":
+                t_ = L.calibration_table(y, p_); t_["target"] = lab["target"]; cal_tabs.append(t_)
+calib = pd.DataFrame(cal_rows); calib.to_csv(L.METRICS / "calibration_summary.csv", index=False)
+cal_curve = pd.concat(cal_tabs, ignore_index=True); cal_curve.to_csv(L.METRICS / "calibration_curve.csv", index=False)
+p_dep = lab_churn["fitted"][sel_churn].predict_proba(Xte_c)[:, 1]; y_dep = yte_c.values
+band_masks = [("High (≥ 0.50)", p_dep >= 0.5), (f"Elevated ({THR_OP:.2f}–0.50)", (p_dep >= THR_OP) & (p_dep < 0.5)), (f"Low (< {THR_OP:.2f})", p_dep < THR_OP)]
+band_check = pd.DataFrame([{"band": b, "test_members": int(m.sum()), "mean_predicted": p_dep[m].mean() if m.any() else np.nan,
+                            "observed_churn_rate": y_dep[m].mean() if m.any() else np.nan} for b, m in band_masks])
+band_check.to_csv(L.METRICS / "risk_band_check.csv", index=False)
+display(calib.round(4)); display(band_check.round(3))
+fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+for a, (tgt, g) in zip(ax, cal_curve.groupby("target", sort=False)):
+    row = calib[(calib.target == tgt) & (calib.version == "as deployed")].iloc[0]
+    a.plot([0, 1], [0, 1], color=L.UI["muted"], ls="--", lw=1.2, label="perfect calibration")
+    a.plot(g.mean_predicted, g.observed_rate, marker="o", lw=2, color=L.SERIES[0], label=f"{row.model} (test)")
+    a.set(title=f"Reliability — {tgt}\nBrier skill {row.brier_skill:.2f} · ECE {row.ece:.3f}", xlabel="Mean predicted probability (decile bins)", ylabel="Observed rate", xlim=(0, 1), ylim=(0, 1))
+    a.legend(fontsize=8, loc="upper left")
+save(fig, "calibration_reliability")
+
+%%CODE
+dep = calib[calib.version == "as deployed"].set_index("target")
+best_v = calib.loc[calib.groupby("target").brier.idxmin()].set_index("target")
+hb = band_check.iloc[0]
+roc_shift = float((calib.groupby("target").roc_auc.max() - calib.groupby("target").roc_auc.min()).max())
+high_ok = pd.notna(hb.observed_churn_rate) and hb.observed_churn_rate >= 0.5
+lines = [f"* **{t}** ({dep.loc[t, 'model']}): Brier skill {dep.loc[t, 'brier_skill']:.2f}, ECE {dep.loc[t, 'ece']:.3f}; mean predicted {dep.loc[t, 'mean_predicted']:.3f} vs observed {dep.loc[t, 'observed_rate']:.3f}. "
+         + (f"Re-calibration ({best_v.loc[t, 'version'].split('(')[1][:-1]}) would lower the Brier score by {dep.loc[t, 'brier'] - best_v.loc[t, 'brier']:.4f}." if best_v.loc[t, 'version'] != "as deployed" else "Neither re-calibration improves on the deployed probabilities.")
+         for t in dep.index]
+display(Markdown("**Reading the calibration check.**\n" + "\n".join(lines) + "\n"
+                 + (f"* **Risk bands (churn, test set):** members scored ≥ 0.50 lapsed at a rate of {hb.observed_churn_rate*100:.0f}% (n = {int(hb.test_members)}); "
+                    if hb.test_members > 0 else "* **Risk bands (churn, test set):** no test member was scored ≥ 0.50; ")
+                 + ("the 'more likely than not' reading of the High band is supported." if high_ok else "**the High band should be read as 'highest risk', not as a literal 'more likely than not'** — the dashboard labels it accordingly.")
+                 + f" Elevated: {band_check.iloc[1].observed_churn_rate*100:.0f}% observed (mean predicted {band_check.iloc[1].mean_predicted*100:.0f}%); Low: {band_check.iloc[2].observed_churn_rate*100:.0f}%."
+                 + (f"\n* Re-calibration changes ROC-AUC by at most {roc_shift:.3f}, so rankings — which drive every list in the dashboard — are essentially unchanged; the deployed models are kept, and re-calibration is recommended when the models are retrained on new periods."
+                    if roc_shift < 0.01 else f"\n* Re-calibration shifts ROC-AUC by up to {roc_shift:.3f} (isotonic steps can create ties); the deployed models are kept and the what-if is reported for the next retraining.")))
+
+%%MD
+### 13.9 How certain are the test results? Bootstrap confidence intervals
+Each test set has only about 700 members, so a test score is itself an estimate. The test set is resampled 1,000 times — stratified by class, with the **same** resamples for every model so that comparisons are paired — to give a 95% percentile interval for every model's ROC-AUC and PR-AUC, and paired intervals for the two comparisons that matter: the deployed model vs the best-CV model, and the best ensemble vs the best single learner (CV winners). A difference whose interval includes zero is not established by the test set. For churn, recall, precision and F1 at the operational threshold get intervals too.
+
+%%CODE
+ci_rows, pair_rows, seen_pairs = [], [], set()
+for lab in (lab_churn, lab_home, lab_fash):
+    y = lab["yte"].values; idx = L.bootstrap_indices(y, BOOT, seed=SEED)
+    probs = {m: mdl.predict_proba(lab["Xte"])[:, 1] for m, mdl in lab["fitted"].items() if not m.endswith("(hard)")}
+    for mname, mfun in [("roc_auc", roc_auc_score), ("pr_auc", average_precision_score)]:
+        tab, smp = L.bootstrap_ci(y, probs, mfun, idx)
+        tab["target"], tab["metric"] = lab["target"], mname
+        ci_rows.append(tab)
+        if mname == lab["primary"]:
+            single, ens = ens_compare(lab)[:2]; pt = tab.set_index("model").point
+            for label_, a_, b_ in [("deployed vs best-CV model", lab["selected"], lab["best_cv"]), ("best ensemble vs best single learner", ens.model, single.model)]:
+                if a_ != b_ and a_ in smp and b_ in smp and (lab["target"], frozenset((a_, b_))) not in seen_pairs:   # skip a pair already reported (e.g. best-CV = best ensemble)
+                    seen_pairs.add((lab["target"], frozenset((a_, b_))))
+                    pair_rows.append({"target": lab["target"], "metric": mname, "comparison": label_, "A": a_, "B": b_, **L.paired_difference(smp[a_], smp[b_], pt[a_], pt[b_])})
+test_ci = pd.concat(ci_rows, ignore_index=True)[["target", "metric", "model", "point", "ci_low", "ci_high", "boot_se"]]
+test_ci.to_csv(L.METRICS / "test_ci.csv", index=False)
+test_pairs = pd.DataFrame(pair_rows); test_pairs.to_csv(L.METRICS / "test_ci_pairs.csv", index=False)
+idx_op = L.bootstrap_indices(y_dep, BOOT, seed=SEED); pred_op = (p_dep >= THR_OP).astype(int)
+op_ci = pd.concat([L.bootstrap_ci(y_dep, {f"{sel_churn} @ {THR_OP:.2f}": pred_op}, (lambda f: (lambda a, b: f(a, b, zero_division=0)))(f_), idx_op)[0].assign(metric=n_)
+                   for n_, f_ in [("recall", recall_score), ("precision", precision_score), ("f1", f1_score)]], ignore_index=True)
+op_ci.to_csv(L.METRICS / "churn_operational_ci.csv", index=False)
+display(test_pairs.round(4)); display(op_ci.round(3))
+fig, ax = plt.subplots(1, 3, figsize=(16, 5))
+for a, lab in zip(ax, (lab_churn, lab_home, lab_fash)):
+    g = test_ci[(test_ci.target == lab["target"]) & (test_ci.metric == lab["primary"])].sort_values("point")
+    cols_ = [L.UI["navy"] if m == lab["selected"] else L.SERIES[0] for m in g.model]
+    a.errorbar(g.point, range(len(g)), xerr=[g.point - g.ci_low, g.ci_high - g.point], fmt="none", ecolor=L.UI["muted"], elinewidth=1.2, capsize=2)
+    a.scatter(g.point, range(len(g)), c=cols_, s=36, zorder=3)
+    a.set_yticks(range(len(g)), g.model, fontsize=7.5)
+    a.set(title=f"{lab['target']}: test {lab['primary']} with 95% CI\n(navy = deployed)", xlabel=f"test {lab['primary']}")
+save(fig, "test_confidence_intervals")
+
+%%CODE
+sel_rows = test_ci[test_ci.apply(lambda r: r.model == {"churn": lab_churn, "home": lab_home, "fashion": lab_fash}[r.target]["selected"] and r.metric == {"churn": "pr_auc", "home": "roc_auc", "fashion": "roc_auc"}[r.target], axis=1)]
+lines = []
+for r in sel_rows.itertuples():
+    g = test_ci[(test_ci.target == r.target) & (test_ci.metric == r.metric)]
+    overl = int(((g.ci_low <= r.ci_high) & (g.ci_high >= r.ci_low)).sum()) - 1
+    lines.append(f"* **{r.target}** — deployed {r.model}: test {r.metric} {r.point:.3f} (95% CI {r.ci_low:.3f}–{r.ci_high:.3f}, width {r.ci_high - r.ci_low:.3f}); {overl} of {len(g) - 1} other models have overlapping intervals.")
+for r in test_pairs.itertuples():
+    lines.append(f"* {r.target} · {r.comparison}: {r.A} − {r.B} = {r.diff:+.3f} (95% CI {r.ci_low:+.3f} to {r.ci_high:+.3f}) → {r.verdict}.")
+ro = op_ci.set_index("metric")
+display(Markdown("**Reading the intervals.**\n" + "\n".join(lines) +
+                 f"\n* Churn at the operational threshold {THR_OP:.2f}: recall {ro.loc['recall', 'point']:.2f} ({ro.loc['recall', 'ci_low']:.2f}–{ro.loc['recall', 'ci_high']:.2f}), precision {ro.loc['precision', 'point']:.2f} ({ro.loc['precision', 'ci_low']:.2f}–{ro.loc['precision', 'ci_high']:.2f})."
+                 "\n* **Implication:** most differences between the leading models are smaller than the uncertainty of a 700-member test set, which is exactly why selection used the one-standard-error rule on cross-validation rather than test-set ranks."))

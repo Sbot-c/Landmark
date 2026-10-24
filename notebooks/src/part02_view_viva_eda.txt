@@ -1,0 +1,279 @@
+%%MD
+## §3 · The unified Shukran customer view (one row per member)
+
+**As-of date.** All customer features are computed against `OBS_DATE` = the latest recorded Shukran transaction (2026-10-01). This is the dataset's observation date — **not today's date**. Only transactions on or before the reference date feed a feature, so the same builder can be re-run at an earlier cutoff for the temporal (early-warning and next-period) models later.
+
+%%CODE
+cv = L.build_customer_view(cust, tx_a, OBS_DATE)
+print(f"OBS_DATE (as-of) = {OBS_DATE.date()}   |   customer view shape = {cv.shape}")
+
+# Reconciliation: the aggregation must neither drop nor duplicate revenue
+recon = {
+    "obs_date": str(OBS_DATE.date()),
+    "customers_in_file": len(cust), "rows_in_customer_view": len(cv),
+    "transactions_in_file": len(tx), "sum_of_customer_frequency": int(cv.frequency.sum()),
+    "shukran_revenue_source_aed": round(float(tx.amount.sum()), 2),
+    "shukran_revenue_customer_view_aed": round(float(cv.monetary.sum()), 2),
+    "viva_revenue_source_aed": round(float(viva.amount.sum()), 2),
+    "banner_shares_sum_to_1": bool(np.allclose(cv.filter(like="bshare_").sum(axis=1), 1)),
+}
+assert recon["rows_in_customer_view"] == recon["customers_in_file"]
+assert recon["sum_of_customer_frequency"] == recon["transactions_in_file"]
+assert np.isclose(recon["shukran_revenue_source_aed"], recon["shukran_revenue_customer_view_aed"])
+L.save_json(recon, L.METRICS / "reconciliation.json")
+pd.Series(recon, name="value").to_frame()
+
+%%MD
+### 3.1 Feature dictionary — purpose and leakage risk of every engineered feature
+
+%%CODE
+FEATURES = [
+ ("recency_days","RFM","Days from last purchase to as-of date","Lapse signal; core of RFM","Near-defines the churn label at OBS — excluded from concurrent churn models"),
+ ("frequency / log_frequency","RFM","Number of transactions","Engagement depth","Component of monetary (CLV circularity)"),
+ ("monetary / log_monetary","RFM","Total recorded spend, AED","Historical value; CLV target","IS the CLV target; contains home spend → leaks home routing"),
+ ("avg_ticket / log_avg_ticket","Behaviour","Mean spend per transaction","Price-tier proxy","Overall ticket contains Home Centre tickets → leaks home routing"),
+ ("median_ticket, max_ticket","Behaviour","Median / largest transaction","Robust ticket size","As avg_ticket"),
+ ("discount_rate","Behaviour","Share of transactions with discount_used=1","Promotion sensitivity / margin risk","Overall rate includes target-banner rows → routing uses non-target version"),
+ ("n_banners, n_categories","Breadth","Distinct banners / categories visited","Cross-banner engagement (the Shukran advantage)","Low"),
+ ("active_months","Engagement","Distinct calendar months with a purchase","Consistency of shopping","Proxy for frequency (CLV)"),
+ ("days_since_first","Lifecycle","Days since first recorded purchase","Observed customer age","Low"),
+ ("purchase_rate_30d, spend_rate_30d","Engagement","Transactions / spend per 30 days of observed life","Drift-robust activity rates for temporal models","Low"),
+ ("mean_gap_days, recency_gap_ratio","Lifecycle","Mean inter-purchase gap; recency ÷ gap","'Overdue' signal","Recency-based → excluded from concurrent churn models"),
+ ("f90, f180, spend90, spend180","Momentum","Transactions / spend in last 90 & 180 days","Recent momentum","Recent window = churn-label window at OBS"),
+ ("f_prev90, trend90","Momentum","Transactions in prior 90 days; f90 − f_prev90","Acceleration / decline","As above"),
+ ("banner_hhi","Concentration","Herfindahl index of banner spend shares","Specialist vs explorer","Low"),
+ ("bshare_<banner>","Banner mix","Share of spend per banner (7)","Where the wallet goes","bshare_Home Centre / Homebox = the home-routing label itself"),
+ ("cshare_<category>","Category mix","Share of spend per category (5)","Category affinity","Exact linear combination of bshare (redundant); cshare_Home leaks routing"),
+ ("bspend_ / cspend_","Spend","AED per banner / category","Banner-level value","Target-banner spend leaks routing"),
+ ("cticket_<category>","Price tier","Average ticket inside each category (NaN = never bought)","Within-category price tier","cticket_Home leaks home routing"),
+ ("age, gender, emirate, family_size, has_kids","Profile","As supplied","Profiling only (segments are behavioural)","Low; used cautiously to avoid stereotyping"),
+ ("tenure_months, days_member_ref, signup_year/quarter, tenure_band","Lifecycle","Membership age & cohort","Acquisition cohorts","tenure_months ≡ f(signup_date)"),
+ ("age_band, recency_band, household, top_banner","Bands","Interpretable groupings","Dashboard filters & profiles","recency_band leaks churn"),
+]
+feature_dictionary = pd.DataFrame(FEATURES, columns=["feature", "group", "definition", "business_purpose", "leakage_note"])
+feature_dictionary.to_csv(L.METRICS / "feature_dictionary.csv", index=False)
+feature_dictionary
+
+%%CODE
+# Redundancy / correlation / low-variance screen on the numeric engineered features
+num_cols = ["recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners", "n_categories",
+            "active_months", "days_since_first", "purchase_rate_30d", "f90", "f180", "trend90", "banner_hhi"] + \
+           [f"bshare_{b}" for b in L.CORE_BANNERS] + [f"cshare_{c}" for c in L.CATEGORIES]
+corr = cv[num_cols].corr()
+pairs = (corr.where(np.triu(np.ones(corr.shape), 1).astype(bool)).stack().rename("r").reset_index()
+           .rename(columns={"level_0": "feature_a", "level_1": "feature_b"}))
+high = pairs[pairs.r.abs() >= 0.85].sort_values("r", key=abs, ascending=False)
+print("Highly correlated pairs (|r| >= 0.85):"); display(high.round(3))
+# exact linear dependencies between category and banner shares
+lin = {"cshare_Home = bshare_Home Centre + bshare_Homebox": np.allclose(cv.cshare_Home, cv["bshare_Home Centre"] + cv.bshare_Homebox),
+       "cshare_Fashion = bshare_Splash + bshare_Max": np.allclose(cv.cshare_Fashion, cv.bshare_Splash + cv.bshare_Max),
+       "cshare_Baby = bshare_Babyshop": np.allclose(cv.cshare_Baby, cv.bshare_Babyshop),
+       "bshare_* sum to 1 (compositional)": np.allclose(cv.filter(like="bshare_").sum(axis=1), 1)}
+display(pd.Series(lin, name="holds").to_frame())
+lowvar = cv[num_cols].std()
+print("Near-zero-variance features:", list(lowvar[lowvar < 1e-3].index) or "none")
+
+%%MD
+**Retention decisions.** Category shares are exact sums of banner shares, so `cshare_*` are **dropped from PCA/clustering** (they would double-weight the same information) but kept for profiling. `log_frequency`, `active_months` and `f180` are near-duplicates of one another; PCA absorbs this redundancy for segmentation, while each supervised model gets an explicitly audited feature list (§10–§14). Banner shares sum to one, so one dimension of the mix is redundant by construction — another reason PCA is useful here.
+
+## §4 · The Viva blind spot — attempted join, quantification and consequences
+
+%%CODE
+# 1) Try the join the way an analyst naturally would
+attempt = cust.merge(viva, left_on="customer_id", right_on="viva_member_id", how="inner")
+print(f"Inner join customers.customer_id = viva.viva_member_id  ->  {len(attempt)} matched rows")
+viva_ids = viva.viva_member_id.dropna().astype(str)
+print("ID prefixes:  Shukran", sorted(cust.customer_id.str[:3].unique()), "|  Viva", sorted(viva_ids.str[:2].unique()))
+print(f"Numeric ranges:  SHK {cust.customer_id.str[3:].astype(int).min()}–{cust.customer_id.str[3:].astype(int).max()}   "
+      f"VR {viva_ids.str[2:].astype(int).min()}–{viva_ids.str[2:].astype(int).max()}")
+print("Stripping prefixes and matching numbers would MANUFACTURE links between unrelated people — not done.")
+
+# 2) Quantify the gap
+common_start = max(tx.date.min(), viva.date.min())
+tx_common = tx[tx.date >= common_start]; viva_common = viva[viva.date >= common_start]
+gap = {
+    "attempted_join_matches": int(len(attempt)),
+    "viva_rows": int(len(viva)), "viva_anonymous_rows": int(viva.viva_member_id.isna().sum()),
+    "viva_anonymous_pct": round(viva.viva_member_id.isna().mean() * 100, 2),
+    "viva_identified_members": int(viva_ids.nunique()),
+    "viva_identified_revenue_aed": round(float(viva.loc[viva.viva_member_id.notna(), "amount"].sum()), 2),
+    "viva_anonymous_revenue_aed": round(float(viva.loc[viva.viva_member_id.isna(), "amount"].sum()), 2),
+    "core_7_banner_revenue_aed": round(float(tx.amount.sum()), 2),
+    "viva_revenue_aed": round(float(viva.amount.sum()), 2),
+    "total_recorded_revenue_aed": round(float(tx.amount.sum() + viva.amount.sum()), 2),
+    "viva_share_full_period_pct": round(viva.amount.sum() / (viva.amount.sum() + tx.amount.sum()) * 100, 2),
+    "common_window": f"{common_start.date()} to {OBS_DATE.date()}",
+    "viva_share_common_window_pct": round(viva_common.amount.sum() / (viva_common.amount.sum() + tx_common.amount.sum()) * 100, 2),
+    "viva_transaction_share_common_window_pct": round(len(viva_common) / (len(viva_common) + len(tx_common)) * 100, 2),
+    "core_coverage": [str(tx.date.min().date()), str(tx.date.max().date())],
+    "viva_coverage": [str(viva.date.min().date()), str(viva.date.max().date())],
+    "viva_avg_ticket_aed": round(float(viva.amount.mean()), 2), "core_avg_ticket_aed": round(float(tx.amount.mean()), 2),
+}
+per_member = viva[viva.viva_member_id.notna()].groupby("viva_member_id").amount.agg(["size", "sum"])
+gap["viva_identified_member_median_tx"] = float(per_member["size"].median())
+gap["viva_identified_member_median_spend_aed"] = round(float(per_member["sum"].median()), 2)
+shukran_common_spend = tx_common.groupby("customer_id").amount.sum()
+gap["shukran_member_median_spend_common_window_aed"] = round(float(shukran_common_spend.median()), 2)
+L.save_json(gap, L.METRICS / "viva_gap.json")
+pd.Series(gap, name="value").to_frame()
+
+%%MD
+**Reflection — why Viva cannot be joined (Stage 0, Q3).** `viva_member_id` belongs to a *different identity system* (Viva Rewards, `VR…`), the attempted join returns **zero** rows, and about a third of Viva baskets carry no ID at all. There is no shared key, and the Viva file carries no name, phone, email, emirate or demographic field that could support even a probabilistic match. Matching on behaviour (same day, similar spend) would be guesswork with a high false-match rate, and linking two loyalty programmes' members without a consent basis would breach the spirit of the UAE Personal Data Protection Law (Federal Decree-Law 45/2021). **No mapping is inferred anywhere in this project.**
+
+**How the blind spot biases the analysis downstream (the gap is quantified in the table above):**
+1. **CLV is understated, unevenly.** Every Shukran member's value excludes their grocery spend. Grocery-heavy households (typically larger families) are under-ranked relative to fashion or furniture shoppers, so "who is most valuable" is biased toward non-grocery wallets.
+2. **Churn can be misread.** A member who shifts weekly spending to Viva while visiting Shukran banners less looks like a lapsing customer even if their total relationship with the Group is stable; the churn model cannot see this substitution.
+3. **Segments and bundles have no grocery dimension.** Apriori can never surface a "Viva + Babyshop" or "Viva + Homebox" bundle, although the supermarket is the highest-frequency touchpoint (Viva has the most transactions of any banner — see §6).
+4. **Loyalty measurement is incomplete.** Programme reach, share of wallet and the value of Shukran are measured on seven of eight banners only.
+
+The fix is architectural, not statistical: a governed identity link (the *Key Ring* proposal, §17).
+
+## §5 · Exploratory data analysis (E1–E10)
+
+%%CODE
+# E1 — distribution of transaction amounts (skewness)
+fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+ax[0].hist(tx.amount, bins=60, color=L.SERIES[0], edgecolor="white", linewidth=0.4)
+ax[0].set(title=f"E1a · Transaction amount (skew = {tx.amount.skew():.2f})", xlabel="Amount per transaction (AED)", ylabel="Transactions")
+ax[0].axvline(tx.amount.median(), color=L.UI["navy"], lw=1.5, label=f"median AED {tx.amount.median():.0f}")
+ax[0].axvline(tx.amount.mean(), color=L.UI["terra"], lw=1.5, label=f"mean AED {tx.amount.mean():.0f}"); ax[0].legend()
+ax[1].hist(np.log10(tx.amount), bins=60, color=L.SERIES[2], edgecolor="white", linewidth=0.4)
+ax[1].set(title=f"E1b · log10(amount) (skew = {np.log10(tx.amount).skew():.2f})", xlabel="log10(AED)", ylabel="Transactions")
+save(fig, "eda_E1_amount_distribution")
+
+%%MD
+**E1 — implication.** Amounts are right-skewed (mean > median) and the log view is multi-modal because each banner has its own price level. Distance-based models (K-means, KNN, SVM) therefore receive log-transformed monetary features; business tables keep AED.
+
+%%CODE
+# E2 — customer profile distributions & categorical breakdowns
+fig, axes = plt.subplots(2, 3, figsize=(13, 6.5))
+axes[0, 0].hist(cust.age, bins=23, color=L.SERIES[0], edgecolor="white"); axes[0, 0].set(title="E2a · Age", xlabel="Age (years)", ylabel="Members")
+axes[0, 1].bar(*np.unique(cust.family_size, return_counts=True), color=L.SERIES[0]); axes[0, 1].set(title="E2b · Family size", xlabel="People in household", ylabel="Members")
+axes[0, 2].hist(cust.tenure_months, bins=28, color=L.SERIES[0], edgecolor="white"); axes[0, 2].set(title="E2c · Tenure", xlabel="Months as member", ylabel="Members")
+for a, col, ttl in [(axes[1, 0], "gender", "E2d · Gender"), (axes[1, 1], "emirate", "E2e · Emirate"), (axes[1, 2], "has_kids", "E2f · Household has kids")]:
+    vc = (cust[col].map({0: "No kids", 1: "With kids"}) if col == "has_kids" else cust[col].astype(str)).value_counts()
+    a.barh(vc.index[::-1], vc.values[::-1], color=L.SERIES[0]); a.set(title=ttl, xlabel="Members")
+    for i, v in enumerate(vc.values[::-1]): a.text(v, i, f" {v:,}", va="center", fontsize=8.5)
+save(fig, "eda_E2_profile")
+
+%%CODE
+# E3 — missingness and outliers
+fig, ax = plt.subplots(1, 2, figsize=(13, 4.2), gridspec_kw={"width_ratios": [1, 1.6]})
+mp = pd.concat({a["file"]: pd.Series(a["missing_pct"]) for a in AUDIT}).rename("pct").reset_index()
+mp["label"] = mp.level_0.str.replace("_transactions", "") + "." + mp.level_1
+mp = mp.sort_values("pct")
+ax[0].barh(mp.label, mp.pct, color=np.where(mp.pct > 0, L.UI["terra"], L.UI["grid"]))
+ax[0].set(title="E3a · Missing values by column", xlabel="% of rows missing"); ax[0].tick_params(axis="y", labelsize=7)
+order = tx.groupby("banner").amount.median().sort_values().index
+sns.boxplot(data=tx, y="banner", x="amount", order=order, palette=BC, ax=ax[1], fliersize=1.5, linewidth=0.8, hue="banner", legend=False)
+ax[1].set(xscale="log", title="E3b · Amount by banner (log scale; dots = within-banner IQR outliers)", xlabel="AED per transaction (log)", ylabel="")
+save(fig, "eda_E3_missing_outliers")
+
+%%CODE
+# E4 — correlation heatmap (selected engineered numeric features)
+sel = ["recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners", "banner_hhi", "trend90",
+       "age", "family_size", "tenure_months"] + [f"bshare_{b}" for b in L.CORE_BANNERS] + ["churned"]
+fig, ax = plt.subplots(figsize=(11, 9))
+sns.heatmap(cv[sel].corr(), cmap=sns.diverging_palette(250, 15, s=70, l=50, as_cmap=True), center=0, vmin=-1, vmax=1,
+            annot=True, fmt=".2f", annot_kws={"size": 6.5}, linewidths=0.4, cbar_kws={"label": "Pearson r"}, ax=ax)
+ax.set_title("E4 · Correlation of engineered customer features (incl. churn label)")
+save(fig, "eda_E4_correlation")
+
+%%MD
+**E4 — implication.** Only two features are meaningfully correlated with `churned`: `recency_days` (strongly positive) and `trend90` (negative) — and both describe the last 90 days, the label's own window. Average ticket, monetary value and `bshare_Home Centre` move together (premium furniture drives spend); demographics are almost uncorrelated with behaviour. Two consequences: the churn label must be checked for reconstruction by recency (§10), and segmenting on behaviour rather than demographics is both more informative and less prone to stereotyping.
+
+%%CODE
+# E5 — RFM distributions
+fig, ax = plt.subplots(1, 3, figsize=(13, 3.8))
+ax[0].hist(cv.recency_days, bins=45, color=L.SERIES[0], edgecolor="white"); ax[0].axvline(90, color=L.UI["terra"], lw=1.5, label="90 days")
+ax[0].set(title="E5a · Recency", xlabel="Days since last purchase", ylabel="Members"); ax[0].legend()
+ax[1].bar(*np.unique(cv.frequency, return_counts=True), color=L.SERIES[0]); ax[1].set(title="E5b · Frequency", xlabel="Transactions per member", ylabel="Members")
+ax[2].hist(cv.monetary, bins=45, color=L.SERIES[0], edgecolor="white"); ax[2].xaxis.set_major_formatter(AED)
+ax[2].set(title=f"E5c · Monetary (skew = {cv.monetary.skew():.2f})", xlabel="Total recorded spend (AED)", ylabel="Members")
+save(fig, "eda_E5_rfm")
+
+%%CODE
+# E6 — signup cohorts and churn status (two panels; no dual axis)
+coh = cv.groupby(["signup_year", "churned"]).size().unstack(fill_value=0)
+fig, ax = plt.subplots(1, 2, figsize=(13, 4))
+ax[0].bar(coh.index.astype(str), coh[0], color=L.SERIES[2], label="Active (0)")
+ax[0].bar(coh.index.astype(str), coh[1], bottom=coh[0], color=L.STATUS["critical"], label="Churned (1)", hatch="//", edgecolor="white")
+ax[0].set(title="E6a · Members by signup year and status", xlabel="Signup year (2026 = Jan–Sep)", ylabel="Members"); ax[0].legend()
+rate = (coh[1] / coh.sum(axis=1) * 100)
+ax[1].bar(rate.index.astype(str), rate.values, color=L.SERIES[0]); ax[1].axhline(cv.churned.mean() * 100, color=L.UI["navy"], lw=1.2, label="overall")
+for i, v in enumerate(rate.values): ax[1].text(i, v + 0.5, f"{v:.0f}%", ha="center", fontsize=8.5)
+ax[1].set(title="E6b · Churn rate by signup cohort", xlabel="Signup year", ylabel="Churned members (%)"); ax[1].legend()
+save(fig, "eda_E6_cohorts_churn")
+
+%%CODE
+# E7 — banner-level volume, revenue and ticket size (horizontal bars = rankings)
+bstats = tx.groupby("banner").agg(revenue=("amount", "sum"), transactions=("amount", "size"), avg_ticket=("amount", "mean"))
+fig, ax = plt.subplots(1, 3, figsize=(14, 3.8))
+for a, col, ttl, fmt in [(ax[0], "revenue", "E7a · Recorded revenue, Shukran banners (AED)", AED), (ax[1], "transactions", "E7b · Transactions", None),
+                         (ax[2], "avg_ticket", "E7c · Average ticket (AED)", None)]:
+    s = bstats[col].sort_values()
+    a.barh(s.index, s.values, color=[BC[b] for b in s.index]); a.set(title=ttl)
+    if fmt: a.xaxis.set_major_formatter(fmt)
+    for i, v in enumerate(s.values): a.text(v, i, f" {v/1e6:.2f}M" if col == "revenue" else f" {v:,.0f}", va="center", fontsize=8)
+    a.set_xlim(0, s.max() * 1.22)
+save(fig, "eda_E7_banner_kpis")
+
+%%CODE
+# E8 — discount usage and spending patterns
+d_b = tx.groupby(["banner", "discount_used"]).amount.mean().unstack()
+fig, ax = plt.subplots(1, 3, figsize=(14, 4))
+dr = tx.groupby("banner").discount_used.mean().sort_values() * 100
+ax[0].barh(dr.index, dr.values, color=[BC[b] for b in dr.index]); ax[0].set(title="E8a · Share of transactions discounted", xlabel="% of transactions")
+for i, v in enumerate(dr.values): ax[0].text(v, i, f" {v:.1f}%", va="center", fontsize=8)
+ax[0].set_xlim(0, dr.max() * 1.2)
+x = np.arange(len(d_b)); w = 0.38
+ax[1].bar(x - w/2, d_b[0], w, color=L.SERIES[0], label="Full price"); ax[1].bar(x + w/2, d_b[1], w, color=L.SERIES[3], label="Discount used", hatch="//", edgecolor="white")
+ax[1].set_xticks(x, d_b.index, rotation=35, ha="right"); ax[1].set(title="E8b · Average ticket: full price vs discounted", ylabel="AED per transaction"); ax[1].legend()
+ax[2].hist(cv.discount_rate * 100, bins=25, color=L.SERIES[0], edgecolor="white")
+ax[2].set(title="E8c · Member discount rate", xlabel="% of member's transactions discounted", ylabel="Members")
+save(fig, "eda_E8_discount")
+
+%%CODE
+# E9 — revenue by category and cross-banner behaviour
+fig, ax = plt.subplots(1, 3, figsize=(17, 4.6), gridspec_kw={"width_ratios": [1, 0.9, 1.25]})
+cat = tx.groupby("category").amount.sum().sort_values()
+ax[0].barh(cat.index, cat.values, color=L.SERIES[0]); ax[0].xaxis.set_major_formatter(AED); ax[0].set(title="E9a · Recorded revenue by category", xlabel="AED")
+for i, v in enumerate(cat.values): ax[0].text(v, i, f" {v/1e6:.2f}M", va="center", fontsize=8)
+ax[0].set_xlim(0, cat.max() * 1.2)
+nb = cv.n_banners.value_counts().sort_index()
+ax[1].bar(nb.index.astype(str), nb.values, color=L.SERIES[0]); ax[1].set(title="E9b · Banners visited per member", xlabel="Distinct banners", ylabel="Members")
+for i, v in enumerate(nb.values): ax[1].text(i, v, f"{v:,}", ha="center", va="bottom", fontsize=8)
+basket = (tx.groupby(["customer_id", "banner"]).size().unstack(fill_value=0) > 0)[L.CORE_BANNERS]
+cond = pd.DataFrame({a: basket[basket[a]].mean() for a in L.CORE_BANNERS}).T * 100   # row: given A, % also visiting B
+sns.heatmap(cond, annot=True, fmt=".0f", cmap="Blues", cbar_kws={"label": "% of row-banner shoppers"}, ax=ax[2], annot_kws={"size": 7.5}, linewidths=0.4)
+ax[2].set(title="E9c · Co-visit rate\n(% of row-banner shoppers who also visit the column banner)", xlabel="", ylabel="")
+ax[2].tick_params(labelsize=7.5)
+save(fig, "eda_E9_category_crossbanner")
+
+%%MD
+**E9 — implication.** Most members visit three or more banners, which is exactly what makes Shukran's unified view (and Apriori) possible. The co-visit matrix shows a striking structural fact: **no member shops both Home Centre and Homebox, and none shops both Splash and Max** (0% cells). Each member has one home tier and one fashion tier. This makes the routing label unambiguous (no ties, §11) and shows why those pairs can never appear together in an association rule.
+
+%%CODE
+# E10 — Viva vs Shukran-linked spending and coverage (monthly; one axis, both AED)
+m_core = tx.groupby(tx.date.dt.to_period("M")).amount.sum()
+m_viva = viva.groupby(viva.date.dt.to_period("M")).amount.sum()
+mm = pd.DataFrame({"Shukran (7 banners)": m_core, "Viva (separate IDs)": m_viva})      # NaN before Viva coverage — not plotted as zero
+mm = mm[mm.index < pd.Period("2026-10", "M")]                                          # October 2026 = 1 day: excluded from the trend line
+mm.index = mm.index.to_timestamp()
+fig, ax = plt.subplots(1, 2, figsize=(14, 4.2), gridspec_kw={"width_ratios": [2, 1]})
+ax[0].plot(mm.index, mm["Shukran (7 banners)"], color=L.SERIES[0], lw=2, marker="o", ms=3, label="Shukran (7 banners)")
+ax[0].plot(mm.index, mm["Viva (separate IDs)"], color=BC["Viva"], lw=2, marker="s", ms=3, label="Viva (separate IDs)")
+for p in ["2024-04", "2025-08"]:
+    ax[0].axvspan(pd.Period(p).start_time, pd.Period(p).end_time, color="#ECE8DF", alpha=0.8, zorder=0)
+ax[0].yaxis.set_major_formatter(AED); ax[0].legend(loc="upper left")
+ax[0].set(title="E10a · Monthly recorded revenue (shaded = partial month; Oct-2026 = 1 day, omitted)", xlabel="Month", ylabel="AED")
+comp = pd.Series({"Identified Viva\nmembers": gap["viva_identified_revenue_aed"], "Anonymous Viva\nwalk-ins": gap["viva_anonymous_revenue_aed"]})
+ax[1].bar(comp.index, comp.values, color=[BC["Viva"], L.UI["muted"]]); ax[1].yaxis.set_major_formatter(AED)
+for i, v in enumerate(comp.values): ax[1].text(i, v, f"AED {v/1e3:,.0f}K", ha="center", va="bottom", fontsize=8.5)
+ax[1].set(title="E10b · Viva revenue by identification", ylabel="AED (Viva coverage only)")
+save(fig, "eda_E10_viva_vs_shukran")
+
+%%MD
+**Reflection — spend skew and what it implies (Stage 0, Q2).** Transaction amounts are right-skewed and customer monetary value is moderately skewed. Implications applied downstream: (i) log transforms for distance-based clustering and linear models; (ii) MAE is reported alongside RMSE for CLV because RMSE is dominated by the few high spenders; (iii) medians appear next to means in segment profiles. **Target skew:** churn is imbalanced (≈25% positive), so accuracy is a weak metric — PR-AUC, recall and a cost-tuned threshold drive the churn model; the home-routing classes are close to balanced.
+
+**E10 — implication.** Viva data starts only on 2025-08-28 while the Shukran banners start on 2024-04-15, so any comparison of Viva with other banners must use the common window. Both sources end on 2026-10-01 — a single day of Q4 2026.

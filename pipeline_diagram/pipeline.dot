@@ -1,0 +1,53 @@
+digraph Pipeline {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=12, bgcolor="white", nodesep=0.35, ranksep=0.55, pad=0.3,
+         label="Landmark Retail Group — Customer Intelligence Engine · implemented pipeline (solid = built, dashed = proposed)", labelloc=t, fontcolor="#14213D"];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, color="#14213D", fillcolor="#F7F5F0", penwidth=1.2, margin="0.15,0.08"];
+  edge  [color="#5C6670", penwidth=1.1, arrowsize=0.7, fontname="Helvetica", fontsize=8, fontcolor="#5C6670"];
+
+  subgraph cluster_data { label="Stage 0 · data"; style="rounded"; color="#B08D57"; fontcolor="#14213D";
+    raw   [label="customers.csv +\ntransactions.csv\n(Shukran IDs)"];
+    audit [label="Audit & validation\nPK/FK · duplicates · IDs\noutliers in context · MD5"];
+    clean [label="Cleaning (no deletion)\nflags: pre-signup tx,\npartial periods"];
+    view  [label="Unified customer view\n1 row / member · as-of 2026-10-01\nRFM · ticket · discount · mix", fillcolor="#EAF2F8"];
+  }
+  subgraph cluster_viva { label="Viva branch (separate identity system)"; style="rounded,dashed"; color="#A0672E"; fontcolor="#A0672E";
+    vraw [label="viva_transactions.csv\n(VR… IDs, 35% anonymous)", color="#A0672E"];
+    vgap [label="Join attempted → 0 matches\nViva gap quantified", color="#A0672E"];
+    keyring [label="Key Ring identity bridge\n(PROPOSED — consent, hashed keys,\nclerical review)", style="rounded,dashed", color="#A0672E", fillcolor="white"];
+  }
+  subgraph cluster_seg { label="Unsupervised"; style="rounded"; color="#B08D57"; fontcolor="#14213D";
+    pca [label="PCA (15 behavioural features\n→ 9 PCs ≈ 90% variance)\n2-D map · candidate representation"];
+    clu [label="Clustering K=3\nK-means (Euclidean) on raw std. features\ncompared with K-medoids (Manhattan)\n(like-for-like silhouette)"];
+    seg [label="Named segments\n(evidence-based)\n+ shopping-style view"];
+  }
+  subgraph cluster_sup { label="Supervised (leakage-controlled)"; style="rounded"; color="#B08D57"; fontcolor="#14213D";
+    cut  [label="Temporal & non-target views\nchurn: as-of − 90 d\nrouting: non-home / non-fashion"];
+    leak [label="Leakage audits\n(direct + indirect)"];
+    lab  [label="Model lab × 3 targets\n9 singles + bagging, boosting,\nvoting, stacking · 1-SE rule"];
+    thrn [label="Churn threshold by cost\n(5:1 base → t = 0.23)\nvalue-weighted tiers"];
+    route[label="Routing: Logistic Regression (home)\nLogistic Regression (fashion)"];
+    clv  [label="CLV regression\nhistorical (circularity audit)\n+ next-180-day (cutoff −180 d)\nBG/NBD benchmark · 80% ranges"];
+    bv   [label="Bias–variance\nlearning/validation curves\ndecomposition"];
+    val  [label="Validation layer\nout-of-time test · ablation\ncalibration · bootstrap CIs\nscoring guard", fillcolor="#EAF2F8"];
+  }
+  subgraph cluster_act { label="Action layer"; style="rounded"; color="#B08D57"; fontcolor="#14213D";
+    apr  [label="Apriori on member-level\nbanner baskets (+ per segment)\nactivity/household-adjusted lift"];
+    bund [label="Bundles: eligible members\nby segment, risk, value"];
+    eps  [label="ε-greedy offer sandbox\n(SIMULATION)", style="rounded,dashed", fillcolor="white"];
+    loy  [label="Shukran analytics · discount\ndependency · migration"];
+    fin  [label="Group financials\n8-banner ranking · scenarios"];
+  }
+  dash [label="Streamlit dashboard\n(reads artifacts only)", fillcolor="#14213D", fontcolor="white"];
+
+  raw -> audit -> clean -> view;
+  view -> clu [label="standardised raw\nfeatures (selected)"]; view -> pca; pca -> clu [style=dashed, label="compared"]; clu -> seg;
+  view -> cut -> leak -> lab;
+  lab -> thrn; lab -> route; view -> clv;
+  lab -> bv; clv -> bv; lab -> val; clv -> val; thrn -> val [style=dotted];
+  view -> apr; seg -> apr [label="per segment"]; apr -> bund -> eps;
+  seg -> bund [style=dotted]; thrn -> bund [style=dotted, label="risk"]; clv -> bund [style=dotted, label="value"];
+  seg -> loy; thrn -> loy; route -> loy;
+  clean -> fin; vraw -> vgap -> fin;
+  vgap -> keyring [style=dashed]; keyring -> view [style=dashed, label="future"];
+  fin -> dash; loy -> dash; bund -> dash; eps -> dash; bv -> dash; route -> dash; thrn -> dash; seg -> dash; val -> dash;
+}

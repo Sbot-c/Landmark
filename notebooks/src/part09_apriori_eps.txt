@@ -1,0 +1,289 @@
+%%MD
+## §16 · Cross-banner basket analysis — Apriori
+
+**What a "basket" is here.** The files have no checkout-basket ID or SKU, so a basket is **the set of distinct banners a member visited during the observation window** (possible only because Shukran gives one ID across banners). Rules therefore describe **cross-banner co-shopping affinity**, not products bought together in one checkout, and not causation. A robustness check with *customer-month* baskets (banners visited by the same member in the same month) follows.
+
+%%CODE
+from mlxtend.frequent_patterns import apriori, association_rules
+from scipy.stats import chi2_contingency
+basket = (tx_a.groupby(["customer_id", "banner"]).size().unstack(fill_value=0) > 0)[L.CORE_BANNERS]
+item_support = basket.mean().sort_values(ascending=False)
+display(item_support.rename("support (share of members visiting)").round(3).to_frame())
+
+def mine(b, sup, conf, min_lift=None):
+    fi = apriori(b, min_support=sup, use_colnames=True)
+    if fi.empty: return pd.DataFrame()
+    with warnings.catch_warnings():   # mlxtend's optional 'certainty' metric divides by zero when a banner is in every basket of a segment; it is not used here
+        warnings.filterwarnings("ignore", category=RuntimeWarning, module="mlxtend")
+        r = association_rules(fi, num_itemsets=len(b), metric="confidence", min_threshold=conf)
+    if min_lift is not None: r = r[r.lift >= min_lift]
+    return r
+
+def add_significance(r, b):
+    """Chi-square test of independence for each rule (antecedent-set present vs consequent-set present)."""
+    pv = []
+    for _, row in r.iterrows():
+        A = b[list(row.antecedents)].all(axis=1); C = b[list(row.consequents)].all(axis=1)
+        tab = pd.crosstab(A, C).reindex(index=[False, True], columns=[False, True], fill_value=0)
+        pv.append(chi2_contingency(tab)[1] if (tab.values > 0).all() else np.nan)
+    r = r.copy(); r["p_value"] = pv
+    r["significant_bonferroni"] = r.p_value < 0.05 / max(len(r), 1)
+    return r
+
+sweep_rows = []
+for sup in [0.02, 0.05, 0.10, 0.15, 0.20]:
+    for conf in [0.3, 0.4, 0.5, 0.6, 0.7]:
+        r = mine(basket, sup, conf)
+        sweep_rows.append({"min_support": sup, "min_confidence": conf, "rules": len(r),
+                           "rules_lift_ge_1.1": int((r.lift >= 1.1).sum()) if len(r) else 0,
+                           "rules_to_Centrepoint": int(r.consequents.apply(lambda s: s == frozenset({"Centrepoint"})).sum()) if len(r) else 0})
+apr_sweep = pd.DataFrame(sweep_rows); apr_sweep.to_csv(L.METRICS / "apriori_sweep.csv", index=False)
+fig, ax = plt.subplots(1, 2, figsize=(13, 4))
+for a, col, ttl in [(ax[0], "rules", "All rules"), (ax[1], "rules_lift_ge_1.1", "Rules with lift ≥ 1.1")]:
+    sns.heatmap(apr_sweep.pivot(index="min_support", columns="min_confidence", values=col), annot=True, fmt="d", cmap="Blues", ax=a, cbar=False, linewidths=0.4)
+    a.set(title=f"Threshold sweep — {ttl}", xlabel="Minimum confidence", ylabel="Minimum support")
+save(fig, "apriori_threshold_sweep")
+apr_sweep.pivot(index="min_support", columns="min_confidence", values="rules")
+
+%%MD
+**Choosing thresholds.** Low thresholds flood the output with rules that merely restate that most members visit Centrepoint (its item support is very high, so almost any rule "→ Centrepoint" has high confidence but lift ≈ 1 — *trivial*). High thresholds remove everything. The working setting is **min support 5%** (≈150 members — enough to fund a campaign test), **min confidence 30%**, then rules are kept only if **lift ≥ 1.05**, the chi-square test of independence is significant after a Bonferroni correction, and the rule is **actionable** — a single destination banner (one offer) and at most two antecedent banners (long antecedents describe tiny niches and mostly restate shorter rules). Lift, not confidence, is the decision metric: it measures how much more likely the consequent is *because of* the antecedent's presence relative to its base rate.
+
+%%CODE
+SUP, CONF, MIN_LIFT = 0.05, 0.30, 1.05
+rules_raw = mine(basket, SUP, CONF)
+rules_raw = add_significance(rules_raw, basket)
+rules_raw["antecedent"] = rules_raw.antecedents.apply(lambda s: " + ".join(sorted(s)))
+rules_raw["consequent"] = rules_raw.consequents.apply(lambda s: " + ".join(sorted(s)))
+rules_raw["members_with_rule"] = (rules_raw.support * len(basket)).round().astype(int)
+rules_raw["n_antecedent"] = rules_raw.antecedents.apply(len); rules_raw["n_consequent"] = rules_raw.consequents.apply(len)
+actionable = (rules_raw.n_consequent == 1) & (rules_raw.n_antecedent <= 2)
+rules_raw["kept"] = (rules_raw.lift >= MIN_LIFT) & rules_raw.significant_bonferroni & actionable
+rules_raw["rejection_reason"] = np.select(
+    [rules_raw.kept, rules_raw.lift < MIN_LIFT, ~rules_raw.significant_bonferroni.astype(bool), ~actionable],
+    ["", "lift < 1.05 (no better than base rate)", "not significant after Bonferroni", "not actionable (multi-banner consequent or >2 antecedents)"], default="")
+rules = L.sort_rules(rules_raw[rules_raw.kept], ["lift", "support"], [False, False]).reset_index(drop=True)   # exact ties broken by rule name → same order every run
+cols_r = ["antecedent", "consequent", "support", "confidence", "lift", "leverage", "conviction", "p_value", "members_with_rule"]
+rules[cols_r].to_csv(L.METRICS / "rules_all.csv", index=False)
+rules_raw[cols_r + ["kept", "rejection_reason"]].to_csv(L.METRICS / "rules_screened.csv", index=False)
+print(f"Rules mined: {len(rules_raw)} · kept: {len(rules)} · rejected: {(~rules_raw.kept).sum()}")
+display(rules[cols_r].head(15).round(4))
+display(Markdown("**Negative associations (lift < 1)** — banners that are *less* likely to be co-visited than chance"))
+pairs = []
+for a in L.CORE_BANNERS:
+    for c in L.CORE_BANNERS:
+        if a < c:
+            s_ab = (basket[a] & basket[c]).mean(); lift = s_ab / (basket[a].mean() * basket[c].mean())
+            pairs.append({"banner_a": a, "banner_b": c, "co_visit_support": s_ab, "lift": lift})
+pair_lift = pd.DataFrame(pairs).sort_values("lift"); pair_lift.to_csv(L.METRICS / "pair_lift.csv", index=False)
+display(pair_lift.head(6).round(3))
+
+%%CODE
+lift_m = pd.DataFrame(index=L.CORE_BANNERS, columns=L.CORE_BANNERS, dtype=float)
+for _, r in pair_lift.iterrows():
+    lift_m.loc[r.banner_a, r.banner_b] = lift_m.loc[r.banner_b, r.banner_a] = r.lift
+fig, ax = plt.subplots(1, 2, figsize=(14, 4.8), gridspec_kw={"width_ratios": [1, 1.25]})
+sns.heatmap(lift_m, annot=True, fmt=".2f", cmap=sns.diverging_palette(15, 250, s=70, l=50, as_cmap=True), center=1, ax=ax[0], linewidths=0.4,
+            cbar_kws={"label": "lift (1 = independent)"}, annot_kws={"size": 8})
+ax[0].set(title="Pairwise co-visit lift (blue > 1 > red)"); ax[0].tick_params(labelsize=8)
+top = rules.head(10)[::-1]
+ax[1].barh([f"{a} → {c}" for a, c in zip(top.antecedent, top.consequent)], top.lift, color=L.SERIES[0])
+for i, (l_, s_) in enumerate(zip(top.lift, top.support)): ax[1].text(l_, i, f"  lift {l_:.2f} · supp {s_:.2f}", va="center", fontsize=7.5)
+ax[1].axvline(1, color=L.UI["terra"], lw=1.2); ax[1].set_xlim(0.9, top.lift.max() * 1.25 if len(top) else 2)
+ax[1].set(title="Top kept rules by lift", xlabel="Lift"); ax[1].tick_params(axis="y", labelsize=8)
+save(fig, "apriori_rules")
+
+%%CODE
+lines = [f"* **{r.antecedent} → {r.consequent}** — support {r.support:.3f} ({r.members_with_rule:,} members), confidence {r.confidence:.2f}, lift {r.lift:.2f}" for r in rules.head(6).itertuples()]
+hi_pair, lo_pair = pair_lift.iloc[-1], pair_lift.iloc[0]
+display(Markdown("**Strongest kept rules (read as: members who shop the left-hand banner(s) are *lift ×* more likely than average to also shop the right-hand banner):**\n" + "\n".join(lines) +
+                 f"\n\nStrongest pairwise affinity: **{hi_pair.banner_a} + {hi_pair.banner_b}** (lift {hi_pair.lift:.2f}); weakest: **{lo_pair.banner_a} + {lo_pair.banner_b}** (lift {lo_pair.lift:.2f}). "
+                 "Pairs with lift 0 are the two tier pairs (Home Centre/Homebox, Splash/Max): members never shop both banners of a tier pair, so the right cross-sell for a value-home shopper is never the premium-home banner as a 'bundle' — that is the migration question (§19). "
+                 f"{int((~rules_raw.kept).sum())} mined rules were rejected (see `rules_screened.csv` for each reason); "
+                 f"{(rules_raw[~rules_raw.kept].consequent.str.contains('Centrepoint')).mean() * 100:.0f}% of them have Centrepoint in the consequent — a banner most members visit anyway, so such rules have high confidence but lift ≈ 1."))
+
+%%MD
+### 16.2 Robustness — are the affinities about the banners?
+Two checks on every kept rule: **(a)** does it survive holding *activity* and *household* fixed, and **(b)** does it appear within the same month?
+
+**(a) Activity and household.** Members who buy more often visit more banners, which can inflate co-visit lift for any pair; and Babyshop and Funcity are both family banners, so their affinity could simply be "families shop family banners". Each rule's lift is recomputed *within* strata — first activity tercile (number of transactions), then activity tercile × kids — as the observed number of members with both sides divided by the number expected if the two sides were independent within each stratum (a Mantel–Haenszel-style standardised lift), with a Cochran–Mantel–Haenszel test (Bonferroni-corrected). If the adjusted lift falls to about 1, the stratifying variable — not the banner — explains the affinity.
+
+%%CODE
+freq_all = tx_a.groupby("customer_id").size().reindex(basket.index)
+strata_act = pd.Series(pd.qcut(freq_all.rank(method="first"), 3, labels=["low activity", "mid activity", "high activity"]).astype(str), index=basket.index)
+strata_hh = strata_act + " · " + pd.Series(np.where(cv.has_kids.reindex(basket.index) == 1, "kids", "no kids"), index=basket.index)
+adj_rows = []
+for r in rules.itertuples():
+    A_, C_ = sorted(r.antecedents), sorted(r.consequents)
+    a1, a2 = L.stratified_lift(basket, A_, C_, strata_act), L.stratified_lift(basket, A_, C_, strata_hh)
+    adj_rows.append({"antecedent": r.antecedent, "consequent": r.consequent, "lift_adj_activity": a1["adjusted_lift"], "p_cmh_activity": L.cmh_test(basket, A_, C_, strata_act),
+                     "lift_adj_activity_household": a2["adjusted_lift"], "p_cmh_activity_household": L.cmh_test(basket, A_, C_, strata_hh)})
+adj = pd.DataFrame(adj_rows); bonf = 0.05 / max(len(adj), 1)
+adj["survives_activity"] = (adj.lift_adj_activity >= MIN_LIFT) & (adj.p_cmh_activity < bonf)
+adj["survives_activity_household"] = (adj.lift_adj_activity_household >= MIN_LIFT) & (adj.p_cmh_activity_household < bonf)
+adj["affinity_type"] = np.select([adj.survives_activity_household, adj.survives_activity],
+                                 ["banner affinity (survives activity and household)", "household-driven (explained by kids)"], default="activity-driven")
+rules = rules.drop(columns=[c for c in adj.columns if c in rules.columns and c not in ("antecedent", "consequent")]).merge(adj, on=["antecedent", "consequent"], how="left")
+ADJ_COLS = ["lift_adj_activity", "p_cmh_activity", "lift_adj_activity_household", "p_cmh_activity_household", "affinity_type"]
+rules[cols_r + ADJ_COLS].to_csv(L.METRICS / "rules_all.csv", index=False)
+display(rules[["antecedent", "consequent", "lift"] + ADJ_COLS].round(4))
+n_hh = int((rules.affinity_type == "household-driven (explained by kids)").sum()); n_gen = int((rules.affinity_type.str.startswith("banner")).sum())
+top_gen = L.sort_rules(rules[rules.affinity_type.str.startswith("banner")], ["lift_adj_activity_household"], [False]).head(3)
+display(Markdown(f"**Reading (a).** Holding activity fixed barely changes any lift (largest change {(rules.lift - rules.lift_adj_activity).abs().max():.2f}), so the affinities are not an artefact of heavy shoppers. "
+                 f"Holding household fixed as well is decisive: **{n_hh} of {len(rules)} rules are household-driven** — once household is held fixed, their banners are shopped together little or no more often than chance — "
+                 f"while **{n_gen} survive** as genuine banner affinities"
+                 + (": " + "; ".join(f"{r.antecedent} → {r.consequent} (adjusted lift {r.lift_adj_activity_household:.2f})" for r in top_gen.itertuples()) if len(top_gen) else "")
+                 + ". **Implication for offers:** for household-driven rules the antecedent banner adds nothing once you know the member has children, so those offers should target *families who do not yet shop the destination banner*; the bundle ranking below uses the adjusted lift."))
+
+%%MD
+**(b) Customer-month baskets.** The member-level basket spans the whole observation window. To see whether an affinity is a *same-occasion* habit or a *portfolio* habit (the same member uses both banners at different times), each kept rule is re-scored directly on **customer-month baskets** — the banners a member visited within one calendar month. Re-scoring the kept rules (rather than re-mining with a support floor) avoids losing them simply because same-month co-visits are rare.
+
+%%CODE
+bm = (tx_a.assign(month=tx_a.date.dt.to_period("M")).groupby(["customer_id", "month", "banner"]).size().unstack(fill_value=0) > 0)[L.CORE_BANNERS]
+single_share = (bm.sum(axis=1) == 1).mean()
+
+def month_metrics(r):
+    A, C = r.antecedent.split(" + "), r.consequent.split(" + ")
+    a, ac, c = bm[A].all(axis=1), bm[A + C].all(axis=1), bm[C].all(axis=1)
+    conf = ac.sum() / a.sum() if a.sum() else np.nan
+    return pd.Series({"member_months_with_all": int(ac.sum()), "support_month_level": ac.mean(), "confidence_month_level": conf,
+                      "lift_month_level": conf / c.mean() if c.mean() else np.nan})
+
+cmp_rules = pd.concat([rules[["antecedent", "consequent", "lift"]].rename(columns={"lift": "lift_member_level"}).reset_index(drop=True),
+                       rules.reset_index(drop=True).apply(month_metrics, axis=1)], axis=1)
+cmp_rules["lift_above_1_within_month"] = cmp_rules.lift_month_level > 1
+cmp_rules.to_csv(L.METRICS / "rules_month_robustness.csv", index=False)
+multi = cmp_rules[cmp_rules.antecedent.str.contains(r"\+", regex=True)]; single_ = cmp_rules[~cmp_rules.antecedent.str.contains(r"\+", regex=True)]
+print(f"Customer-month baskets: {len(bm):,} · {single_share * 100:.0f}% involve a single banner")
+display(cmp_rules.round(3))
+portfolio = single_.lift_above_1_within_month.mean() < 0.5 if len(single_) else False
+display(Markdown(
+    f"**Reading.** {single_share * 100:.0f}% of member-months involve only one banner, so same-month co-visits are rare (each kept rule co-occurs in "
+    f"{int(cmp_rules.member_months_with_all.min()):,}–{int(cmp_rules.member_months_with_all.max()):,} member-months). Within the same month, "
+    f"{int(multi.lift_above_1_within_month.sum())} of {len(multi)} two-antecedent rules and {int(single_.lift_above_1_within_month.sum())} of {len(single_)} "
+    "single-antecedent rules keep lift > 1. "
+    + ("The affinities therefore describe **which banners the same member uses across the year (a portfolio habit), not same-month or same-trip baskets**: "
+       "the right activation is a cross-banner *introduction* — e.g. a voucher for the member's next visit to the other banner — rather than a same-day bundle."
+       if portfolio else "Most affinities also hold within the same month, so they reflect same-occasion habits as well as portfolio habits.")))
+
+%%MD
+### 16.3 Rules per segment
+Each segment is mined separately (support relative to the segment's own size), which shows whether a bundle is a Group-wide affinity or a segment-specific one.
+
+%%CODE
+seg_rules = []
+for s in cv.segment.unique():
+    ids = cv.index[cv.segment == s]; b = basket.loc[basket.index.intersection(ids)]
+    if len(b) < 100: continue
+    r = mine(b, SUP, CONF, MIN_LIFT)
+    if len(r):
+        r = r[(r.consequents.apply(len) == 1) & (r.antecedents.apply(len) <= 2)]
+    if len(r):
+        r = add_significance(r, b); r = r[r.p_value < 0.05]
+        r["antecedent"] = r.antecedents.apply(lambda x: " + ".join(sorted(x))); r["consequent"] = r.consequents.apply(lambda x: " + ".join(sorted(x)))
+        r["segment"] = s; r["segment_members"] = len(b); seg_rules.append(r)
+rules_seg = pd.concat(seg_rules, ignore_index=True) if seg_rules else pd.DataFrame(columns=["segment", "antecedent", "consequent", "support", "confidence", "lift", "p_value", "segment_members"])
+rules_seg = L.sort_rules(rules_seg, ["segment", "lift"], [True, False])
+rules_seg[["segment", "antecedent", "consequent", "support", "confidence", "lift", "p_value", "segment_members"]].to_csv(L.METRICS / "rules_by_segment.csv", index=False)
+display(rules_seg.groupby("segment").head(3)[["segment", "antecedent", "consequent", "support", "confidence", "lift", "p_value"]].round(3))
+
+%%MD
+### 16.4 From rules to bundles — who is actually eligible?
+A rule *A → C* becomes an offer for members who shop **A but not yet C** (the cross-sell gap). For each top rule the eligible members are counted by segment, with their average churn risk and value, so marketing can see the size and quality of each audience.
+
+%%CODE
+OFFER_TEMPLATES = {
+    "Home Centre": "Home Centre styling credit", "Homebox": "Homebox value-home voucher", "Splash": "Splash new-season fashion voucher",
+    "Max": "Max family-fashion value pack", "Babyshop": "Babyshop kids' essentials voucher", "Centrepoint": "Centrepoint multi-brand coupon",
+    "Funcity": "Funcity family play pass"}
+offer_rules = L.sort_rules(rules, ["lift"], [False]).groupby("consequent").head(2)     # diversify: best two rules per destination banner
+offers = []
+for i, r in offer_rules.iterrows():
+    A, C = list(r.antecedents), list(r.consequents)
+    elig = basket[A].all(axis=1) & ~basket[C].all(axis=1)
+    e = cv.loc[elig[elig].index]
+    offer = " + ".join(OFFER_TEMPLATES[c] for c in C)
+    for s, g in e.groupby("segment"):
+        offers.append({"rule": f"{r.antecedent} → {r.consequent}", "lift": r.lift, "confidence": r.confidence, "offer_idea": f"Send {offer} to {r.antecedent} shoppers",
+                       "segment": s, "eligible_members": len(g), "avg_churn_risk_next90d": g.churn_risk_next90d.mean(),
+                       "avg_historical_value_aed": g.monetary.mean(), "avg_pred_next180_aed": g.clv_next180_pred_aed.mean()})
+bundle_offers = pd.DataFrame(offers)
+# Opportunity score = excess co-shoppers the rule implies if eligible members behaved like the rule's average: (confidence − base rate) × eligible
+base_rate = {b: basket[b].mean() for b in L.CORE_BANNERS}
+bundle_offers["consequent"] = bundle_offers.rule.str.split(" → ").str[1]
+bundle_offers["opportunity_score_raw"] = (bundle_offers.confidence - bundle_offers.consequent.map(base_rate)).clip(lower=0) * bundle_offers.eligible_members
+# Adjusted score (§16.2a): the same arithmetic with the activity- and household-adjusted lift, since confidence − base rate = base rate × (lift − 1)
+adj_l = rules.set_index(["antecedent", "consequent"]).lift_adj_activity_household
+bundle_offers["antecedent"] = bundle_offers.rule.str.split(" → ").str[0]
+bundle_offers["lift_adj_activity_household"] = [adj_l.get((a, c), np.nan) for a, c in zip(bundle_offers.antecedent, bundle_offers.consequent)]
+bundle_offers["affinity_type"] = [rules.set_index(["antecedent", "consequent"]).affinity_type.get((a, c), "") for a, c in zip(bundle_offers.antecedent, bundle_offers.consequent)]
+bundle_offers["opportunity_score"] = (bundle_offers.consequent.map(base_rate) * (bundle_offers.lift_adj_activity_household - 1)).clip(lower=0) * bundle_offers.eligible_members
+bundle_offers["audience_note"] = np.where(bundle_offers.affinity_type.str.startswith("household"),
+                                          "affinity explained by household — target families not yet shopping " + bundle_offers.consequent, "")
+bundle_offers.to_csv(L.METRICS / "bundle_offers.csv", index=False)
+best_offer_by_segment = bundle_offers[(bundle_offers.eligible_members >= 20) & (bundle_offers.opportunity_score > 0)].sort_values(["segment", "opportunity_score"], ascending=[True, False]).groupby("segment").head(1)
+cv["recommended_bundle"] = cv.segment.map(best_offer_by_segment.set_index("segment").offer_idea).fillna("No significant cross-banner rule for this segment")
+display(bundle_offers.pivot_table(index="rule", columns="segment", values="eligible_members", aggfunc="sum", fill_value=0))
+display(Markdown("**Recommended bundle per segment** — highest *opportunity score* = base rate of the destination banner × (adjusted lift − 1) × eligible members, i.e. the number of extra co-shoppers the affinity would imply **after allowing for activity and household** (§16.2a). The unadjusted score is kept alongside for comparison. A sizing heuristic, not a forecast of uplift."))
+display(best_offer_by_segment[["segment", "rule", "lift", "lift_adj_activity_household", "offer_idea", "eligible_members", "opportunity_score", "opportunity_score_raw", "avg_churn_risk_next90d"]].round(3))
+
+%%MD
+**Validation required before any rollout.** Association rules show where co-shopping *already* happens; they do not prove that an offer will *create* new co-shopping. Each bundle should be tested with a randomised hold-out (some eligible members receive the offer, a control group does not) and judged on incremental visits and margin, not on redemptions alone.
+
+## §16.5 · The "epsilon method" — an ε-greedy offer sandbox (**SIMULATION**)
+**Interpretation.** The term is not defined in either specification. In a machine-learning programme that also teaches reinforcement learning, the most relevant meaning is the **ε-greedy exploration–exploitation rule** of multi-armed bandits: with probability ε show a random offer (explore), otherwise show the offer with the best estimated redemption rate so far (exploit). Other meanings were considered and rejected for this use: DBSCAN's `eps` radius (the brief requires K-chosen segmentation), SVR's ε-insensitive loss (CLV is not specified as SVR) and convergence tolerances (not a method).
+
+**Why it is a simulation.** The data contain **no record of offers shown, redeemed or the incremental reward** that resulted. The arms below are the strongest bundle offers (by activity- and household-adjusted lift, §16.2a) for five different destination banners, and their "true" redemption probabilities are **hypothetical inputs** (here derived from rule confidence purely for illustration and editable in the dashboard). Nothing below is evidence of campaign uplift; it shows how a future live test would allocate traffic and learn.
+
+%%CODE
+arms = L.sort_rules(rules, ["lift_adj_activity_household", "lift"], [False, False]).drop_duplicates("consequent").head(5).copy()   # one arm per destination banner, strongest adjusted affinity first
+arms["arm"] = [f"{OFFER_TEMPLATES[c]} (to {a} shoppers)" for a, c in zip(arms.antecedent, arms.consequent)]
+arms["hypothetical_redemption_p"] = (0.04 + 0.10 * (arms.confidence - arms.confidence.min()) / max(arms.confidence.max() - arms.confidence.min(), 1e-9)).round(3)
+display(arms[["arm", "confidence", "lift", "hypothetical_redemption_p"]].round(3))
+eps_rows, curves_eps = [], {}
+for e, decay in [(0.0, False), (0.05, False), (0.10, False), (0.20, False), (0.50, False), (0.30, True)]:
+    res = L.epsilon_greedy_sim(arms.hypothetical_redemption_p.values, e, steps=2000, runs=100 if FAST else 300, decay=decay)
+    label = f"ε = {e:.2f}" + (" decaying" if decay else "")
+    curves_eps[label] = res
+    eps_rows.append({"policy": label, "share_best_offer_last_500_steps": res["pct_optimal"][-500:].mean(), "avg_reward_per_contact": res["avg_reward"].mean(),
+                     "cumulative_regret_2000": res["cum_regret"][-1], "status": "SIMULATION — hypothetical redemption rates"})
+eps_summary = pd.DataFrame(eps_rows); eps_summary.to_csv(L.METRICS / "epsilon_sim_summary.csv", index=False)
+arms[["arm", "confidence", "lift", "hypothetical_redemption_p"]].to_csv(L.METRICS / "epsilon_arms.csv", index=False)
+display(eps_summary.round(4))
+fig, ax = plt.subplots(1, 2, figsize=(14, 4))
+for i, (lbl, res) in enumerate(curves_eps.items()):
+    ax[0].plot(pd.Series(res["pct_optimal"]).rolling(50, min_periods=1).mean(), lw=1.8, color=L.SERIES[i], label=lbl)
+    ax[1].plot(res["cum_regret"], lw=1.8, color=L.SERIES[i], label=lbl)
+ax[0].set(title="SIMULATION · share of contacts receiving the best offer", xlabel="Contact number", ylabel="Share (rolling 50)", ylim=(0, 1.02)); ax[0].legend(fontsize=8)
+ax[1].set(title="SIMULATION · cumulative regret (redemptions lost vs always-best)", xlabel="Contact number", ylabel="Cumulative regret"); ax[1].legend(fontsize=8)
+save(fig, "epsilon_greedy_simulation")
+
+%%MD
+**Reading the simulation.** ε = 0 (pure exploitation) can lock onto an early lucky offer and never discover the best one; very high ε keeps wasting contacts on inferior offers; a small or decaying ε learns the best offer quickly while still checking the alternatives. The practical recommendation is a **live bandit or A/B pilot** that records exposure and redemption per member — the data needed to replace these hypothetical probabilities with real ones.
+
+## §17 · The "Key Ring" approach — a governed identity bridge between Viva and Shukran (**PROPOSED, not implemented**)
+**Interpretation.** In customer-data platforms a *unified profile* works like a **key ring**: each source system keeps its own ID (a Shukran ID, a Viva Rewards ID), and the profile *links* those keys without overwriting either source. Keys can be added, removed or moved if a link proves wrong. This is the architectural answer to the Viva blind spot (§4). It does **not** replace PCA, clustering or classification — it would feed them better data.
+
+**Status in this project: proposed only.** The supplied files contain no shared identifier, so *no link was created*, and the attempted join (§4) correctly returns zero matches.
+
+| Layer | Design |
+|---|---|
+| Consent capture | Viva Rewards and Shukran apps ask members to opt in to linking (UAE PDPL, Federal Decree-Law 45/2021: consent must be specific, provable and withdrawable) |
+| Deterministic matching | Verified mobile number or email, hashed (SHA-256 + salt) in both systems; exact match on the hash → auto-link |
+| Probabilistic tier | Name / emirate / date-of-birth similarity scored Fellegi–Sunter style: above upper threshold → link; below lower → no link; in between → **human clerical review** |
+| Key-ring table | `ring_id, id_type, id_value_hash, match_rule, match_confidence, consent_timestamp, reviewer, valid_from, valid_to` (no raw PII) |
+| Audit & reversal | Every link and un-link logged; false matches can be removed without touching source systems |
+| Data minimisation | Only the ring table and hashed keys are shared; Viva basket detail stays in Viva's system and is aggregated before joining |
+| Downstream refresh | CLV, recency/churn, segments and Apriori re-run on the linked view; Viva-inclusive bundles become possible |
+| Validation | Measure precision of links on a consented, manually verified sample before using links in models; monitor false-match rate |
+
+%%CODE
+key_ring = {"status": "PROPOSED — not implemented; no links manufactured from the supplied files",
+            "attempted_join_matches": gap["attempted_join_matches"],
+            "viva_identified_members_that_could_be_linked_with_consent": gap["viva_identified_members"],
+            "viva_revenue_currently_unattributable_aed": gap["viva_revenue_aed"],
+            "layers": ["consent capture", "deterministic hashed match", "probabilistic tier with clerical review", "key-ring table",
+                       "audit & reversal", "data minimisation", "downstream model refresh", "link-precision validation"],
+            "benefits": ["complete share of wallet", "grocery-aware churn signals", "CLV including grocery spend", "Viva-inclusive bundles"],
+            "risks": ["false matches merge two people", "consent withdrawal must cascade", "PDPL compliance and cross-border transfer rules"]}
+L.save_json(key_ring, L.METRICS / "key_ring_proposal.json")
+pd.Series({k: v if isinstance(v, (str, int, float)) else "; ".join(v) for k, v in key_ring.items()}).to_frame("Key Ring proposal")

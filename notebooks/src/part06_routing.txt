@@ -1,0 +1,270 @@
+%%MD
+### 10.4 Churn — interpretation
+*(Interpretation of the leaderboard, the precision–recall trade-off and the error costs continues in §13, where the operating threshold is chosen.)*
+
+### 10.5 Robustness I — a feature tied to the data window
+`days_since_first` — days since the member's first purchase **in the transaction file** — is one of the strongest churn signals. The file starts on 2024-04-15, so for members who joined earlier the feature records when their history *in this file* begins, not how long they have been customers. Three checks: (1) where the signal sits; (2) what the selected model loses without it — same tuned configuration, same folds, compared pairwise; (3) whether deployment asks the model to extrapolate, since the feature keeps growing after the reference date.
+
+%%CODE
+WINDOW_FEATURE = "days_since_first"
+data_start = tx_a.date.min()
+band = pd.qcut(churn_df[WINDOW_FEATURE], 5, duplicates="drop")
+dsf_evidence = churn_df.groupby(band, observed=True).agg(members=("churned", "size"), churn_rate=("churned", "mean"),
+                                                        joined_before_file_start=("signup_date", lambda s: (s < data_start).mean()),
+                                                        mean_transactions=("frequency", "mean"))
+dsf_evidence.index = [f"{(churn_df[WINDOW_FEATURE].min() if i == 0 else iv.left):.0f}–{iv.right:.0f} days" for i, iv in enumerate(dsf_evidence.index)]   # first band starts at the observed minimum (qcut's edge sits just below it)
+dsf_evidence.to_csv(L.METRICS / "window_feature_bands.csv")
+display(dsf_evidence.round(3))
+
+sel_cfg = lab_churn["configs"][lab_churn["selected"]]
+NUM_NO_WINDOW = [c for c in CHURN_NUM if c != WINDOW_FEATURE]
+pipe_no_window = Pipeline([("prep", make_prep(NUM_NO_WINDOW, CHURN_CAT)), ("m", clone(sel_cfg.named_steps["m"]))])
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    cv_with = cross_validate(clone(sel_cfg), lab_churn["Xtr"], lab_churn["ytr"], cv=lab_churn["skf"], scoring="average_precision", n_jobs=N_JOBS)["test_score"]
+    cv_without = cross_validate(clone(pipe_no_window), lab_churn["Xtr"][NUM_NO_WINDOW + CHURN_CAT], lab_churn["ytr"], cv=lab_churn["skf"], scoring="average_precision", n_jobs=N_JOBS)["test_score"]
+    m_no_window = clone(pipe_no_window).fit(lab_churn["Xtr"][NUM_NO_WINDOW + CHURN_CAT], lab_churn["ytr"])
+fold_diff = cv_with - cv_without
+se_fold = fold_diff.std(ddof=1) / np.sqrt(len(fold_diff))
+p_with_te = lab_churn["fitted"][lab_churn["selected"]].predict_proba(lab_churn["Xte"])[:, 1]
+p_without_te = m_no_window.predict_proba(lab_churn["Xte"][NUM_NO_WINDOW + CHURN_CAT])[:, 1]
+idx_churn = L.bootstrap_indices(lab_churn["yte"], BOOT)
+ab_tab, ab_smp = L.bootstrap_ci(lab_churn["yte"], {"with": p_with_te, "without": p_without_te}, average_precision_score, idx_churn)
+ab_diff = L.paired_difference(ab_smp["with"], ab_smp["without"], ab_tab.point[0], ab_tab.point[1])
+_, range_churn = L.clip_to_reference(cv[CHURN_NUM], churn_df[CHURN_NUM], CHURN_NUM)
+window_ablation = {
+    "feature": WINDOW_FEATURE, "file_start": str(data_start.date()), "model": lab_churn["selected"],
+    "cv_pr_auc_with": float(cv_with.mean()), "cv_pr_auc_without": float(cv_without.mean()), "cv_diff": float(fold_diff.mean()), "cv_diff_paired_se": float(se_fold),
+    "cv_material": bool(fold_diff.mean() > 2 * se_fold),
+    "test_pr_auc_with": ab_tab.point[0], "test_pr_auc_without": ab_tab.point[1], "test_diff": ab_diff["diff"], "test_diff_ci": [ab_diff["ci_low"], ab_diff["ci_high"]],
+    "share_scored_above_training_range": float(range_churn.loc[WINDOW_FEATURE, "share_above_range"]),
+    "training_max": float(range_churn.loc[WINDOW_FEATURE, "train_max"]), "scoring_max": float(range_churn.loc[WINDOW_FEATURE, "score_max"]),
+}
+L.save_json(window_ablation, L.METRICS / "window_feature_ablation.json")
+pd.DataFrame([{"version": "with days_since_first", "cv_pr_auc": cv_with.mean(), "test_pr_auc": ab_tab.point[0], "test_ci": f"{ab_tab.ci_low[0]:.3f}–{ab_tab.ci_high[0]:.3f}"},
+              {"version": "without", "cv_pr_auc": cv_without.mean(), "test_pr_auc": ab_tab.point[1], "test_ci": f"{ab_tab.ci_low[1]:.3f}–{ab_tab.ci_high[1]:.3f}"}]).round(3)
+
+%%CODE
+wa = window_ablation; lo_band, hi_band = dsf_evidence.iloc[0], dsf_evidence.iloc[-1]
+display(Markdown(f"""**Reading.**
+* **Where the signal sits:** churn is {lo_band.churn_rate*100:.0f}% in the lowest band and {hi_band.churn_rate*100:.0f}% in the highest, and {hi_band.joined_before_file_start*100:.0f}% of the highest band joined before the file starts (vs {lo_band.joined_before_file_start*100:.0f}% of the lowest). The feature mostly separates members whose history in this file begins at its very start — partly a property of the data window, not of loyalty.
+* **What the model loses without it:** CV PR-AUC {wa['cv_pr_auc_with']:.3f} → {wa['cv_pr_auc_without']:.3f} (paired difference {wa['cv_diff']:+.3f}, standard error {wa['cv_diff_paired_se']:.3f} — {'a material loss' if wa['cv_material'] else 'within noise'}); on the test set {wa['test_pr_auc_with']:.3f} → {wa['test_pr_auc_without']:.3f} (difference {wa['test_diff']:+.3f}, 95% CI {wa['test_diff_ci'][0]:+.3f} to {wa['test_diff_ci'][1]:+.3f}).
+* **Extrapolation at deployment:** the training maximum is {wa['training_max']:.0f} days, but at the as-of date the feature reaches {wa['scoring_max']:.0f} days and **{wa['share_scored_above_training_range']*100:.0f}% of members** lie above anything the model has seen — the feature grows by 90 days between the reference and as-of dates.
+* **Decision.** {'The feature carries real signal in this period, so it stays in the model' if wa['cv_material'] else 'The feature adds little, but it is kept so the lab comparison stays like-for-like'}; every forward score is computed with a **scoring guard** (§13.4) that clips each feature to its training range, so the model never extrapolates. Because the signal is partly tied to the data window, it should be re-checked whenever the history window changes (see the out-of-time test next)."""))
+
+%%MD
+### 10.6 Robustness II — out-of-time test
+The lab's test set is a random 25% of members at the **same** reference date, so it cannot show whether the relationship holds in a *different period*. The supplied churn flag exists once, but it follows a clear rule — no purchase in the following 90 days, which matches the flag for almost every member (§10.2) — so the same rule can label earlier periods.
+
+**Design.** Features at two earlier dates — 2026-01-04 and 2026-04-04 — each labelled "no purchase in the next 90 days", are pooled to train the selected configuration (same tuned hyper-parameters, no re-tuning). The model then scores members at the reference date 2026-07-03 and is judged against the **supplied flag**. The latest training label window ends on 2026-07-03, so nothing from the test period enters training. Two diagnostics explain the result: how predictable the 90-day rule is at each date, and *when* churners actually stopped buying.
+
+%%CODE
+OOT_DATES = [REF_CHURN - pd.Timedelta(days=d) for d in (180, 90)]
+def churn_snapshot(t):
+    v = L.build_customer_view(cust, tx_a, t)
+    v = v[v.has_tx == 1].copy()
+    v["y_rule"] = L.inactivity_label(tx_a, v.index, t, 90).values
+    v["snapshot"] = str(t.date())
+    return v
+snaps = {t: churn_snapshot(t) for t in OOT_DATES}
+oot_train = pd.concat(snaps.values())
+rule_at_ref = L.inactivity_label(tx_a, churn_df.index, REF_CHURN, 90)
+te_ids = lab_churn["Xte"].index
+oot_rows, oot_preds = [], {}
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    for label_, cols in [("all features", CHURN_NUM), ("without days_since_first", NUM_NO_WINDOW)]:
+        mdl = Pipeline([("prep", make_prep(cols, CHURN_CAT)), ("m", clone(sel_cfg.named_steps["m"]))]).fit(oot_train[cols + CHURN_CAT], oot_train.y_rule)
+        p_all = pd.Series(mdl.predict_proba(churn_df[cols + CHURN_CAT])[:, 1], index=churn_df.index)
+        oot_preds[label_] = p_all
+        oot_rows.append({"model": f"{lab_churn['selected']} · trained on earlier periods · {label_}", "train_rows": len(oot_train), "train_label_rate": oot_train.y_rule.mean(),
+                         "pr_auc_all_members": average_precision_score(churn_df.churned, p_all), "roc_auc_all_members": roc_auc_score(churn_df.churned, p_all),
+                         "pr_auc_test_members": average_precision_score(lab_churn["yte"], p_all.loc[te_ids]), "roc_auc_test_members": roc_auc_score(lab_churn["yte"], p_all.loc[te_ids]),
+                         "mean_predicted": p_all.mean(), "observed_rate": churn_df.churned.mean()})
+oot_rows.append({"model": f"{lab_churn['selected']} · in-time (lab test set)", "train_rows": len(lab_churn["ytr"]), "train_label_rate": lab_churn["ytr"].mean(),
+                 "pr_auc_all_members": np.nan, "roc_auc_all_members": np.nan, "pr_auc_test_members": ab_tab.point[0],
+                 "roc_auc_test_members": roc_auc_score(lab_churn["yte"], p_with_te), "mean_predicted": p_with_te.mean(), "observed_rate": lab_churn["yte"].mean()})
+oot = pd.DataFrame(oot_rows)
+oot_ci, oot_smp = L.bootstrap_ci(lab_churn["yte"], {"in-time": p_with_te, "out-of-time": oot_preds["all features"].loc[te_ids].values}, average_precision_score, idx_churn)
+oot_vs_in = L.paired_difference(oot_smp["out-of-time"], oot_smp["in-time"], oot_ci.point[1], oot_ci.point[0])
+oot.to_csv(L.METRICS / "oot_validation.csv", index=False)
+display(oot.round(3))
+
+# Diagnostic 1 — how predictable is the 90-day rule at each date? (same configuration, same CV protocol, ROC-AUC because prevalence differs by date)
+pred_rows = []
+diag_dates = [REF_CHURN - pd.Timedelta(days=d) for d in (270, 180, 90, 0)]
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    for t in diag_dates:
+        sn = snaps.get(t) if t in snaps else churn_snapshot(t)
+        r = cross_validate(clone(sel_cfg), sn[CHURN_NUM + CHURN_CAT], sn.y_rule, cv=StratifiedKFold(CV_FOLDS, shuffle=True, random_state=SEED), scoring="roc_auc", n_jobs=N_JOBS)
+        pred_rows.append({"feature_date": str(t.date()), "label": "no purchase in the next 90 days", "members": len(sn), "label_rate": sn.y_rule.mean(),
+                          "cv_roc_auc": r["test_score"].mean(), "cv_roc_auc_std": r["test_score"].std()})
+predictability = pd.DataFrame(pred_rows)
+predictability.to_csv(L.METRICS / "oot_rule_predictability.csv", index=False)
+display(predictability.round(3))
+
+# Diagnostic 2 — when did churners stop buying?
+last_buy = tx_a.groupby("customer_id").date.max()
+ch_ids = churn_df.index[churn_df.churned == 1]
+gap_at_ref = (REF_CHURN - last_buy.reindex(ch_ids)).dt.days
+earlier = snaps[OOT_DATES[-1]]
+churn_timing = {"churners_with_history": int(len(ch_ids)), "median_days_since_last_purchase_at_reference": float(gap_at_ref.median()),
+                "share_churners_already_inactive_30d_at_reference": float((gap_at_ref >= 30).mean()),
+                "share_churners_bought_after_reference": float((gap_at_ref < 0).mean()),
+                "p_flag_given_earlier_90d_gap": float(churn_df.churned.reindex(earlier.index[earlier.y_rule == 1]).mean()),
+                "p_flag_base": float(churn_df.churned.mean()), "rule_vs_flag_agreement_at_reference": float((rule_at_ref == churn_df.churned).mean())}
+OOT_TRANSFERS = bool(oot.iloc[0].roc_auc_test_members >= 0.6)        # declared rule: ROC-AUC ≥ 0.6 on the lab's test members counts as transferring
+L.save_json({"design": "train on 90-day-rule labels at " + ", ".join(str(t.date()) for t in OOT_DATES) + "; test on supplied flag at " + str(REF_CHURN.date()),
+             "transfers": OOT_TRANSFERS, "transfer_rule": "out-of-time ROC-AUC on the lab's test members >= 0.60",
+             "results": oot.to_dict("records"), "pr_auc_ci_test_members": oot_ci.to_dict("records"), "out_of_time_minus_in_time": oot_vs_in,
+             "predictability_by_date": predictability.to_dict("records"), "churn_timing": churn_timing}, L.METRICS / "oot_summary.json")
+
+fig, ax = plt.subplots(1, 3, figsize=(16, 4.2))
+cmp_ = oot_ci.assign(err_lo=lambda d: d.point - d.ci_low, err_hi=lambda d: d.ci_high - d.point)
+ax[0].bar(cmp_.model, cmp_.point, yerr=[cmp_.err_lo, cmp_.err_hi], color=[L.SERIES[0], L.SERIES[1]], capsize=5)
+ax[0].axhline(lab_churn["yte"].mean(), color=L.UI["muted"], ls="--", lw=1.2, label=f"no skill = prevalence {lab_churn['yte'].mean():.2f}")
+ax[0].set(title="Test PR-AUC with 95% CI — same test members", ylabel="PR-AUC", ylim=(0, 1)); ax[0].legend(fontsize=8)
+ax[1].plot(predictability.feature_date, predictability.cv_roc_auc, marker="o", lw=2, color=L.SERIES[0])
+ax[1].axhline(0.5, color=L.UI["muted"], ls="--", lw=1.2, label="chance")
+ax[1].set(title="How predictable is 'no purchase in the next 90 days'?", xlabel="Feature date", ylabel="CV ROC-AUC", ylim=(0.4, 1)); ax[1].legend(fontsize=8)
+ax[2].hist(gap_at_ref.clip(lower=-90), bins=30, color=L.SERIES[1])
+ax[2].axvline(0, color=L.UI["navy"], lw=1.4, label="reference date")
+ax[2].set(title="Churners: days since last purchase at the reference date", xlabel="Days (negative = bought after the reference date)", ylabel="Members"); ax[2].legend(fontsize=8)
+save(fig, "churn_out_of_time")
+
+%%CODE
+o_all = oot.iloc[0]; ct_ = churn_timing; pr_last = predictability.iloc[-1]; pr_first = predictability.iloc[0]; pr_early = predictability.iloc[:-1]
+transfers = OOT_TRANSFERS
+display(Markdown(f"""**Reading the out-of-time test.**
+* **Result:** trained only on earlier periods, the selected configuration reaches test PR-AUC {oot_ci.point[1]:.3f} (95% CI {oot_ci.ci_low[1]:.3f}–{oot_ci.ci_high[1]:.3f}) and ROC-AUC {o_all.roc_auc_test_members:.3f}, against {oot_ci.point[0]:.3f} in time (CI {oot_ci.ci_low[0]:.3f}–{oot_ci.ci_high[0]:.3f}) and a no-skill PR-AUC of {lab_churn['yte'].mean():.2f}. {'The relationship transfers across periods.' if transfers else '**The relationship does not transfer:** models trained on earlier periods have almost no skill on the recorded churn status.'}
+* **Why:** the 90-day rule is {'only weakly' if pr_early.cv_roc_auc.max() < 0.65 else 'reasonably'} predictable at the {len(pr_early)} earlier dates (CV ROC-AUC {pr_early.cv_roc_auc.min():.2f}–{pr_early.cv_roc_auc.max():.2f}, {pr_early.feature_date.iloc[0]} to {pr_early.feature_date.iloc[-1]}) but highly predictable at the reference date ({pr_last.cv_roc_auc:.2f}). Earlier 90-day gaps were common ({pr_early.label_rate.min()*100:.0f}–{pr_early.label_rate.max()*100:.0f}% of members at those dates) and mostly temporary: members with a gap in the 90 days to {(OOT_DATES[-1] + pd.Timedelta(days=90)).date()} carry the churn flag {ct_['p_flag_given_earlier_90d_gap']*100:.0f}% of the time, against {ct_['p_flag_base']*100:.0f}% overall. The recorded churn is a **recent, concentrated lapse**: at the reference date the median churner had not bought for {ct_['median_days_since_last_purchase_at_reference']:.0f} days, and {ct_['share_churners_already_inactive_30d_at_reference']*100:.0f}% had already been inactive for 30 days or more.
+* **What this means for the model:** the in-time PR-AUC is genuine but **period-specific** — the early-warning model largely recognises lapses that are already under way at the reference date, and there is no evidence yet that the same relationship will hold next quarter. The forward scores (§13.4) are therefore a *ranking hypothesis*: before they drive spend, run a monitored pilot — score members, contact a random half of the flagged list, and compare lapse rates with the uncontacted half after 90 days — and retrain each quarter.
+* **The data-window feature (§10.5):** without `days_since_first`, out-of-time PR-AUC is {oot.iloc[1].pr_auc_test_members:.3f} vs {oot.iloc[0].pr_auc_test_members:.3f} with it — {'no meaningful difference out of time' if abs(oot.iloc[1].pr_auc_test_members - oot.iloc[0].pr_auc_test_members) < 0.02 else 'a difference worth tracking'}."""))
+
+
+%%MD
+
+## §11 · Target B — banner routing: Home Centre (premium) vs Homebox (value)
+
+**Label.** For every member who shopped the home category, `share = Home Centre spend / (Home Centre + Homebox spend)`. Share ≥ 0.6 → **Home Centre (1)**; ≤ 0.4 → **Homebox (0)**; in between → *ambiguous, excluded and counted*. (In this dataset no member shops both home banners, so no one is ambiguous — the rule is documented for when future data contains switchers.)
+
+**Leakage controls (non-negotiable).** The routing model may only see what a customer does **outside the home category**, plus demographics:
+* **Direct leakage removed:** `bshare_Home Centre`, `bshare_Homebox`, `cshare_Home`, `bspend_*`/`cspend_Home`, `cticket_Home`.
+* **Indirect leakage removed:** *every* behavioural feature is recomputed on non-home transactions only (`nh_` prefix). Overall monetary, overall average ticket, overall discount rate and banner shares computed over *total* spend are all excluded: Home Centre's large tickets inflate a customer's total, so even "share of spend at Splash" over total spend partly encodes the home tier through its denominator.
+* **Segments excluded:** the segmentation used home banner shares, so a segment label would smuggle the answer back in.
+
+%%CODE
+y_home, share_home, info_home = L.routing_label(tx_a, "Home Centre", "Homebox")
+nh = L.build_customer_view(cust, tx_a, OBS_DATE, exclude_category="Home", prefix="nh_")
+PROFILE_NUM = ["age", "family_size", "has_kids", "tenure_months"]
+HOME_NUM = PROFILE_NUM + ["nh_recency_days", "nh_log_frequency", "nh_log_monetary", "nh_log_avg_ticket", "nh_median_ticket", "nh_max_ticket",
+                          "nh_discount_rate", "nh_n_banners", "nh_purchase_rate_30d", "nh_banner_hhi"] + \
+           [f"nh_bshare_{b}" for b in ["Splash", "Max", "Babyshop", "Centrepoint", "Funcity"]] + [f"nh_cticket_{c}" for c in ["Fashion", "Baby", "Department", "Entertainment"]]
+HOME_CAT = ["gender", "emirate"]
+FORBIDDEN_HOME = ["Home Centre", "Homebox", "cshare_Home", "cticket_Home", "cspend_Home", "monetary", "avg_ticket", "bshare_", "segment"]
+violations = [c for c in HOME_NUM if (any(f in c for f in ["Home Centre", "Homebox", "cshare_Home", "cticket_Home", "cspend_Home"]))
+              or (c not in PROFILE_NUM and not c.startswith("nh_"))]
+assert not violations, f"LEAKAGE GUARD FAILED: {violations}"
+home_df = nh.loc[y_home.index].copy(); home_df["y"] = y_home
+print("Label info:", info_home)
+print(f"Members with no non-home purchases (behaviour imputed + missing indicators): {(home_df.nh_has_tx == 0).sum()}")
+print("Leakage guard passed — permitted predictors:", len(HOME_NUM) + len(HOME_CAT))
+
+%%CODE
+# Leakage audit: what each feature set would score (quick untuned LR & RF, 5-fold CV on all home shoppers)
+full_cols_direct = HOME_NUM + ["bshare_Home Centre", "bshare_Homebox", "cshare_Home"]
+leaky_total = PROFILE_NUM + ["recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners", "banner_hhi"] + \
+              [f"bshare_{b}" for b in ["Splash", "Max", "Babyshop", "Centrepoint", "Funcity"]]
+mix = home_df.join(cv[["bshare_Home Centre", "bshare_Homebox", "cshare_Home", "recency_days", "log_frequency", "log_monetary", "log_avg_ticket",
+                       "discount_rate", "n_banners", "banner_hhi"] + [f"bshare_{b}" for b in ["Splash", "Max", "Babyshop", "Centrepoint", "Funcity"]]])
+def routing_audit(df, sets, cat, ycol="y"):
+    rows = []
+    for sname, cols in sets.items():
+        for mname, est in [("Logistic Regression", LogisticRegression(max_iter=3000)), ("Random Forest", RandomForestClassifier(300, min_samples_leaf=5, random_state=SEED, n_jobs=N_JOBS))]:
+            r = cross_validate(Pipeline([("prep", make_prep(cols, cat)), ("m", est)]), df[cols + cat], df[ycol], cv=skf5, scoring={"roc_auc": "roc_auc", "accuracy": "accuracy"})
+            rows.append({"feature_set": sname, "model": mname, "n_features": len(cols) + len(cat), "roc_auc": r["test_roc_auc"].mean(), "accuracy": r["test_accuracy"].mean()})
+    return pd.DataFrame(rows)
+leak_home = routing_audit(mix, {
+    "1 DIRECT leak: + home banner shares (forbidden)": full_cols_direct,
+    "2 INDIRECT leak: total-spend features & shares over total (forbidden)": leaky_total,
+    "3 CLEAN: non-home behaviour + demographics (permitted)": HOME_NUM,
+    "4 Demographics only": PROFILE_NUM,
+}, HOME_CAT)
+leak_home.to_csv(L.METRICS / "leakage_audit_home.csv", index=False)
+leak_home.round(3)
+
+%%MD
+The audit is the insight the brief asks for. With the home shares the model is perfect (it is reading the answer); with *any* total-spend feature it is still close to perfect (the "fake ~99%" the brief warns about). With leakage removed the honest signal is **moderate**, and demographics alone are **close to chance**: a customer's price tier is revealed by *how they shop elsewhere*, not by who they are.
+
+%%CODE
+lab_home = run_lab("home", home_df[HOME_NUM + HOME_CAT], home_df.y, HOME_NUM, HOME_CAT, primary="roc_auc")
+lab_home = report_lab(lab_home, "home")
+
+%%CODE
+lab_home = evaluate_test(lab_home)
+show_test(lab_home, "home")
+cm_home = plot_confusion(lab_home, "home", ["Homebox (0)", "Home Centre (1)"], "Home Centre vs Homebox")
+imp_home = perm_importance(lab_home, "home")
+tier_means = home_df.groupby("y")[HOME_NUM].mean().T.rename(columns={0: "Homebox shoppers (mean)", 1: "Home Centre shoppers (mean)"})
+tier_means["difference"] = tier_means.iloc[:, 1] - tier_means.iloc[:, 0]
+display(Markdown("**Signals behind the prediction** — tier means of the most important permitted features"))
+display(tier_means.loc[[f for f in imp_home.feature.head(8) if f in tier_means.index]].round(3))
+
+%%CODE
+def routing_reflection(lab, imp, df, num, premium, value):
+    lbr = lab["leaderboard"]; sel_ = lbr.set_index("model").loc[lab["selected"]]
+    bs_, be_, _, _, ens_phrase = ens_compare(lab)
+    means = df.groupby("y")[num].mean().T
+    sig = [f for f in imp.feature if f in num][:4]
+    direction = "; ".join(f"{L.feature_label(f)} — {'higher' if means.loc[f, 1] > means.loc[f, 0] else 'lower'} for {premium} shoppers ({means.loc[f, 1]:.3g} vs {means.loc[f, 0]:.3g})" for f in sig)
+    display(Markdown(f"""**Reflection — {premium} vs {value}.** Selected: **{lab['selected']}** — CV ROC-AUC {sel_.cv_roc_auc:.3f}, test ROC-AUC {sel_.test_roc_auc:.3f}, test accuracy {sel_.test_accuracy:.3f} (majority class = {max(df.y.mean(), 1 - df.y.mean()):.3f}).
+Best single learner **{bs_.model}** ({bs_.cv_roc_auc:.3f}) vs best ensemble **{be_.model}** ({be_.cv_roc_auc:.3f}): ensembles {ens_phrase}. {'With a weak, mostly additive signal, a simple linear model is as good as anything here and far easier to explain.' if lab['selected'] in ('Logistic Regression', 'SVM (linear)', 'Gaussian NB') else 'The selected model is more complex than a linear model, so its explanations rely on permutation importance rather than coefficients.'}
+**Signals that reveal the tier:** {direction}.
+**Business meaning:** routing is a *soft prior*, not a certainty — good enough to choose which banner to introduce a member to first, or to rank members for a premium test, but not to exclude anyone from either banner."""))
+routing_reflection(lab_home, imp_home, home_df, HOME_NUM, "Home Centre", "Homebox")
+
+%%MD
+## §12 · Target C (advanced) — Splash (premium/mid) vs Max (value)
+Same protocol and the mirror-image leakage controls: behaviour is recomputed on **non-fashion** transactions (`nf_` prefix); fashion banner shares, fashion spend, fashion ticket and overall spend features are excluded. Home-tier behaviour (Home Centre vs Homebox shares *of non-fashion spend*) is permitted — it is "other-category behaviour", exactly the kind of signal the brief asks us to test.
+
+%%CODE
+y_fash, share_fash, info_fash = L.routing_label(tx_a, "Splash", "Max")
+nf = L.build_customer_view(cust, tx_a, OBS_DATE, exclude_category="Fashion", prefix="nf_")
+FASH_NUM = PROFILE_NUM + ["nf_recency_days", "nf_log_frequency", "nf_log_monetary", "nf_log_avg_ticket", "nf_median_ticket", "nf_max_ticket",
+                          "nf_discount_rate", "nf_n_banners", "nf_purchase_rate_30d", "nf_banner_hhi"] + \
+           [f"nf_bshare_{b}" for b in ["Home Centre", "Homebox", "Babyshop", "Centrepoint", "Funcity"]] + [f"nf_cticket_{c}" for c in ["Home", "Baby", "Department", "Entertainment"]]
+violations = [c for c in FASH_NUM if any(f in c for f in ["Splash", "Max", "cshare_Fashion", "cticket_Fashion", "cspend_Fashion"])
+              or (c not in PROFILE_NUM and not c.startswith("nf_"))]
+assert not violations, f"LEAKAGE GUARD FAILED: {violations}"
+fash_df = nf.loc[y_fash.index].copy(); fash_df["y"] = y_fash
+print("Label info:", info_fash)
+mixf = fash_df.join(cv[["bshare_Splash", "bshare_Max", "cshare_Fashion", "recency_days", "log_frequency", "log_monetary", "log_avg_ticket",
+                        "discount_rate", "n_banners", "banner_hhi"] + [f"bshare_{b}" for b in ["Home Centre", "Homebox", "Babyshop", "Centrepoint", "Funcity"]]])
+leak_fash = routing_audit(mixf, {
+    "1 DIRECT leak: + fashion banner shares (forbidden)": FASH_NUM + ["bshare_Splash", "bshare_Max", "cshare_Fashion"],
+    "2 INDIRECT leak: total-spend features & shares over total (forbidden)": PROFILE_NUM + ["recency_days", "log_frequency", "log_monetary", "log_avg_ticket", "discount_rate", "n_banners", "banner_hhi"] + [f"bshare_{b}" for b in ["Home Centre", "Homebox", "Babyshop", "Centrepoint", "Funcity"]],
+    "3 CLEAN: non-fashion behaviour + demographics (permitted)": FASH_NUM,
+    "4 Demographics only": PROFILE_NUM,
+}, HOME_CAT)
+leak_fash.to_csv(L.METRICS / "leakage_audit_fashion.csv", index=False)
+display(leak_fash.round(3))
+L.save_json({"home": {"permitted_numeric": HOME_NUM, "permitted_categorical": HOME_CAT, "label_rule": "share>=0.6 -> Home Centre; <=0.4 -> Homebox; else excluded", "label_info": info_home,
+                      "excluded": {"direct": ["bshare_Home Centre", "bshare_Homebox", "cshare_Home", "bspend_Home Centre", "bspend_Homebox", "cspend_Home", "cticket_Home"],
+                                   "indirect": ["monetary / log_monetary (total)", "avg_ticket (total)", "frequency (total)", "discount_rate (total)", "bshare_* over total spend", "recency over all transactions"],
+                                   "segment": "segments were built on banner shares incl. Home Centre/Homebox"}},
+             "fashion": {"permitted_numeric": FASH_NUM, "permitted_categorical": HOME_CAT, "label_rule": "share>=0.6 -> Splash; <=0.4 -> Max; else excluded", "label_info": info_fash,
+                         "excluded": {"direct": ["bshare_Splash", "bshare_Max", "cshare_Fashion", "bspend_Splash", "bspend_Max", "cspend_Fashion", "cticket_Fashion"],
+                                      "indirect": ["total-spend features", "bshare_* over total spend"], "segment": "segments were built on banner shares incl. Splash/Max"}},
+             "churn": {"design": "early-warning: features at as-of - 90 days; label = status at as-of", "permitted_numeric": CHURN_NUM, "permitted_categorical": CHURN_CAT,
+                       "excluded": ["any feature computed at the as-of date (label window)", "segment (built on recency at the as-of date)"]}},
+            L.METRICS / "permitted_predictors.json")
+
+%%CODE
+lab_fash = run_lab("fashion", fash_df[FASH_NUM + HOME_CAT], fash_df.y, FASH_NUM, HOME_CAT, primary="roc_auc")
+lab_fash = report_lab(lab_fash, "fashion")
+lab_fash = evaluate_test(lab_fash)
+show_test(lab_fash, "fashion")
+cm_fash = plot_confusion(lab_fash, "fashion", ["Max (0)", "Splash (1)"], "Splash vs Max")
+imp_fash = perm_importance(lab_fash, "fashion")
+routing_reflection(lab_fash, imp_fash, fash_df, FASH_NUM, "Splash", "Max")
