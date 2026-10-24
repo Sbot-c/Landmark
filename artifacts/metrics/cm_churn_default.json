@@ -1,0 +1,12 @@
+{
+  "model": "Voting (soft)",
+  "threshold": 0.5,
+  "tn": 536,
+  "fp": 14,
+  "fn": 156,
+  "tp": 31,
+  "labels": [
+    "Active (0)",
+    "Churned (1)"
+  ]
+}

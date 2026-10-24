@@ -1,0 +1,27 @@
+{
+  "status": "PROPOSED \u2014 not implemented; no links manufactured from the supplied files",
+  "attempted_join_matches": 0,
+  "viva_identified_members_that_could_be_linked_with_consent": 1284,
+  "viva_revenue_currently_unattributable_aed": 714566.65,
+  "layers": [
+    "consent capture",
+    "deterministic hashed match",
+    "probabilistic tier with clerical review",
+    "key-ring table",
+    "audit & reversal",
+    "data minimisation",
+    "downstream model refresh",
+    "link-precision validation"
+  ],
+  "benefits": [
+    "complete share of wallet",
+    "grocery-aware churn signals",
+    "CLV including grocery spend",
+    "Viva-inclusive bundles"
+  ],
+  "risks": [
+    "false matches merge two people",
+    "consent withdrawal must cascade",
+    "PDPL compliance and cross-border transfer rules"
+  ]
+}

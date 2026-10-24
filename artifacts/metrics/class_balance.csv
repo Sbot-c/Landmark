@@ -1,0 +1,4 @@
+target,positive class,positives,negatives,n,positive_share_pct,imbalance_ratio (neg:pos),handling
+Churn (early-warning training set),Churned,746,2200,2946,25.3,2.95,stratified split + CV; PR-AUC primary; cost-tuned threshold; class_weight in LR / tree / SVM grids (and ensembles in §22.3)
+Home Centre vs Homebox,Home Centre (premium),1280,1551,2831,45.2,1.21,"near-balanced: stratified split + CV, ROC-AUC primary, no re-weighting needed"
+Splash vs Max,Splash (premium),1232,1557,2789,44.2,1.26,"near-balanced: stratified split + CV, ROC-AUC primary, no re-weighting needed"

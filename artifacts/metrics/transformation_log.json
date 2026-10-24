@@ -1,0 +1,32 @@
+[
+  {
+    "step": "Type parsing",
+    "detail": "date / signup_date parsed as datetime; IDs and labels as string",
+    "rows_affected": 0
+  },
+  {
+    "step": "Exact duplicate removal",
+    "detail": "none found (transactions, viva, customers)",
+    "rows_affected": 0
+  },
+  {
+    "step": "Missing values",
+    "detail": "only viva_member_id is blank (anonymous); retained as anonymous",
+    "rows_affected": 3138
+  },
+  {
+    "step": "Outliers",
+    "detail": "retained; log-transformed copies added for modelling only",
+    "rows_affected": 0
+  },
+  {
+    "step": "Pre-signup transactions",
+    "detail": "retained and flagged (pre_signup=1) in the analytical copy",
+    "rows_affected": 1844
+  },
+  {
+    "step": "Viva",
+    "detail": "kept in a separate branch; never joined to Shukran customers",
+    "rows_affected": 0
+  }
+]

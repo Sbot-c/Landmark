@@ -1,0 +1,7 @@
+policy,share_best_offer_last_500_steps,avg_reward_per_contact,cumulative_regret_2000,status
+ε = 0.00,0.39666666666666656,0.09045666666666666,99.19987666666974,SIMULATION — hypothetical redemption rates
+ε = 0.05,0.8473599999999999,0.11816666666666667,43.846473333333314,SIMULATION — hypothetical redemption rates
+ε = 0.10,0.86838,0.12062333333333333,38.87898333333331,SIMULATION — hypothetical redemption rates
+ε = 0.20,0.8307933333333333,0.11891333333333333,42.31744333333326,SIMULATION — hypothetical redemption rates
+ε = 0.50,0.6011,0.103205,73.86949666666683,SIMULATION — hypothetical redemption rates
+ε = 0.30 decaying,0.88386,0.12258333333333335,34.74245999999994,SIMULATION — hypothetical redemption rates

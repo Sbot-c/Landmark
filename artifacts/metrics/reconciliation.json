@@ -1,0 +1,11 @@
+{
+  "obs_date": "2026-10-01",
+  "customers_in_file": 3000,
+  "rows_in_customer_view": 3000,
+  "transactions_in_file": 29250,
+  "sum_of_customer_frequency": 29250,
+  "shukran_revenue_source_aed": 9156895.45,
+  "shukran_revenue_customer_view_aed": 9156895.45,
+  "viva_revenue_source_aed": 714566.65,
+  "banner_shares_sum_to_1": true
+}

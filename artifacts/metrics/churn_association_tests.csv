@@ -1,0 +1,12 @@
+dimension,groups_tested,lowest,highest,chi2_p_value,significant_at_5pct,significant_after_bonferroni
+segment,3,23% (Value home & discount-led shoppers),27% (Family multi-banner shoppers),0.19730082696676798,False,False
+style_segment,3,25% (Deal-led light shoppers),25% (Broad multi-banner shoppers),0.9211943358476221,False,False
+value_tier,4,24% (Q4 high),26% (Q2),0.9115884263022105,False,False
+tenure_band,5,24% (13-24m),26% (73m+),0.9214805773085033,False,False
+discount_band,5,21% (0% (never)),33% (76–99%),0.02372083842680265,True,False
+n_banners,4,23% (3),27% (4),0.3209330593838763,False,False
+top_banner,7,21% (Splash),30% (Funcity),0.6718403183046675,False,False
+emirate,5,23% (Ajman),28% (Sharjah),0.14843792895963145,False,False
+household,2,24% (No kids),25% (With kids),0.5144438452805715,False,False
+age_band,5,23% (20-29),27% (50-59),0.5955530830594986,False,False
+signup_year,8,23% (2022),31% (2019),0.8618718046988365,False,False

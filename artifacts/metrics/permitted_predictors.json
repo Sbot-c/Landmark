@@ -1,0 +1,156 @@
+{
+  "home": {
+    "permitted_numeric": [
+      "age",
+      "family_size",
+      "has_kids",
+      "tenure_months",
+      "nh_recency_days",
+      "nh_log_frequency",
+      "nh_log_monetary",
+      "nh_log_avg_ticket",
+      "nh_median_ticket",
+      "nh_max_ticket",
+      "nh_discount_rate",
+      "nh_n_banners",
+      "nh_purchase_rate_30d",
+      "nh_banner_hhi",
+      "nh_bshare_Splash",
+      "nh_bshare_Max",
+      "nh_bshare_Babyshop",
+      "nh_bshare_Centrepoint",
+      "nh_bshare_Funcity",
+      "nh_cticket_Fashion",
+      "nh_cticket_Baby",
+      "nh_cticket_Department",
+      "nh_cticket_Entertainment"
+    ],
+    "permitted_categorical": [
+      "gender",
+      "emirate"
+    ],
+    "label_rule": "share>=0.6 -> Home Centre; <=0.4 -> Homebox; else excluded",
+    "label_info": {
+      "in_scope": 2831,
+      "premium_1": 1280,
+      "value_0": 1551,
+      "ambiguous_excluded": 0,
+      "shop_both_banners": 0
+    },
+    "excluded": {
+      "direct": [
+        "bshare_Home Centre",
+        "bshare_Homebox",
+        "cshare_Home",
+        "bspend_Home Centre",
+        "bspend_Homebox",
+        "cspend_Home",
+        "cticket_Home"
+      ],
+      "indirect": [
+        "monetary / log_monetary (total)",
+        "avg_ticket (total)",
+        "frequency (total)",
+        "discount_rate (total)",
+        "bshare_* over total spend",
+        "recency over all transactions"
+      ],
+      "segment": "segments were built on banner shares incl. Home Centre/Homebox"
+    }
+  },
+  "fashion": {
+    "permitted_numeric": [
+      "age",
+      "family_size",
+      "has_kids",
+      "tenure_months",
+      "nf_recency_days",
+      "nf_log_frequency",
+      "nf_log_monetary",
+      "nf_log_avg_ticket",
+      "nf_median_ticket",
+      "nf_max_ticket",
+      "nf_discount_rate",
+      "nf_n_banners",
+      "nf_purchase_rate_30d",
+      "nf_banner_hhi",
+      "nf_bshare_Home Centre",
+      "nf_bshare_Homebox",
+      "nf_bshare_Babyshop",
+      "nf_bshare_Centrepoint",
+      "nf_bshare_Funcity",
+      "nf_cticket_Home",
+      "nf_cticket_Baby",
+      "nf_cticket_Department",
+      "nf_cticket_Entertainment"
+    ],
+    "permitted_categorical": [
+      "gender",
+      "emirate"
+    ],
+    "label_rule": "share>=0.6 -> Splash; <=0.4 -> Max; else excluded",
+    "label_info": {
+      "in_scope": 2789,
+      "premium_1": 1232,
+      "value_0": 1557,
+      "ambiguous_excluded": 0,
+      "shop_both_banners": 0
+    },
+    "excluded": {
+      "direct": [
+        "bshare_Splash",
+        "bshare_Max",
+        "cshare_Fashion",
+        "bspend_Splash",
+        "bspend_Max",
+        "cspend_Fashion",
+        "cticket_Fashion"
+      ],
+      "indirect": [
+        "total-spend features",
+        "bshare_* over total spend"
+      ],
+      "segment": "segments were built on banner shares incl. Splash/Max"
+    }
+  },
+  "churn": {
+    "design": "early-warning: features at as-of - 90 days; label = status at as-of",
+    "permitted_numeric": [
+      "age",
+      "family_size",
+      "has_kids",
+      "days_member_ref",
+      "recency_days",
+      "recency_gap_ratio",
+      "mean_gap_days",
+      "days_since_first",
+      "purchase_rate_30d",
+      "log_spend_rate_30d",
+      "log_avg_ticket",
+      "discount_rate",
+      "n_banners",
+      "n_categories",
+      "banner_hhi",
+      "f90",
+      "f180",
+      "log_spend90",
+      "log_spend180",
+      "trend90",
+      "bshare_Home Centre",
+      "bshare_Homebox",
+      "bshare_Splash",
+      "bshare_Max",
+      "bshare_Babyshop",
+      "bshare_Centrepoint",
+      "bshare_Funcity"
+    ],
+    "permitted_categorical": [
+      "gender",
+      "emirate"
+    ],
+    "excluded": [
+      "any feature computed at the as-of date (label window)",
+      "segment (built on recency at the as-of date)"
+    ]
+  }
+}

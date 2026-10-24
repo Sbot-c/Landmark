@@ -1,0 +1,25 @@
+{
+  "1 Customer records represented": "3,000 Shukran member records (+ 1,284 separate Viva Rewards IDs that cannot be linked)",
+  "2 Active vs churned": "2,253 active \u00b7 747 churned (24.9%)",
+  "3 Joins per signup year": "2019: 81; 2020: 452; 2021: 472; 2022: 407; 2023: 388; 2024: 461; 2025: 418; 2026: 321 (2019 from 07 Nov; 2026 to 01 Sep \u2014 partial years)",
+  "4a Emirates": "Dubai: 1210; Sharjah: 774; Abu Dhabi: 597; Ajman: 289; RAK: 130",
+  "4b Age bands": "20-29: 692; 30-39: 643; 40-49: 663; 50-59: 615; 60+: 387",
+  "4c Household types": "No kids: 1531; With kids: 1469; mean family size 3.1",
+  "4d Tenure cohorts": "0-12m: 423; 13-24m: 436; 25-48m: 824; 49-72m: 897; 73m+: 420",
+  "5 Largest segment by members": "Premium home-led shoppers (1,013 members)",
+  "6 Segment with most recorded spend": "Premium home-led shoppers (AED 4.80M, 52% of Shukran revenue)",
+  "7 Highest transaction activity": "per member: Premium home-led shoppers (10.3 tx); in total: Premium home-led shoppers (10,425 tx)",
+  "8 Highest churn rate": "Family multi-banner shoppers (27%)",
+  "9 Most exposed to discount dependency": "Value home & discount-led shoppers (32% of its spend on discount)",
+  "10 Strongest relationship with each banner": {
+    "Home Centre": "Premium home-led shoppers (reach index 2.34\u00d7 the base)",
+    "Homebox": "Value home & discount-led shoppers (reach index 1.78\u00d7 the base)",
+    "Splash": "Premium home-led shoppers (reach index 1.18\u00d7 the base)",
+    "Max": "Value home & discount-led shoppers (reach index 1.12\u00d7 the base)",
+    "Babyshop": "Family multi-banner shoppers (reach index 2.13\u00d7 the base)",
+    "Centrepoint": "Value home & discount-led shoppers (reach index 1.07\u00d7 the base)",
+    "Funcity": "Family multi-banner shoppers (reach index 1.91\u00d7 the base)"
+  },
+  "11 Premium-tier migration candidates": "Homebox\u2192Home Centre: 156 (107 active); Max\u2192Splash: 156 (117 active)",
+  "12 Retention-intervention priority": "603 active members above the operational risk threshold (0.23) in the top two value quartiles (of whom 102 at \u2265 0.50); combined historical spend AED 2,587K"
+}

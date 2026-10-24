@@ -1,0 +1,20 @@
+{
+  "features_clipped": [
+    "days_since_first",
+    "days_member_ref",
+    "trend90",
+    "log_spend180",
+    "f180",
+    "purchase_rate_30d",
+    "f90",
+    "log_spend90",
+    "log_monetary",
+    "log_spend_rate_30d",
+    "banner_hhi",
+    "log_frequency"
+  ],
+  "max_share_clipped": 0.6216666666666667,
+  "mean_pred_guarded": 707.6693938122016,
+  "mean_pred_unguarded": 707.6693938122016,
+  "spearman_guarded_vs_unguarded": 0.9999999999999999
+}
